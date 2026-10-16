@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- scripts/build-app.sh가 __VERSION__, __BUILD__, __BUNDLE_ID__를 채운다. -->
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>ko</string>
+    <key>CFBundleExecutable</key>
+    <string>EC2Dock</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIdentifier</key>
+    <string>__BUNDLE_ID__</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>EC2Dock</string>
+    <key>CFBundleDisplayName</key>
+    <string>EC2Dock</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>__VERSION__</string>
+    <key>CFBundleVersion</key>
+    <string>__BUILD__</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.developer-tools</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <!-- iTerm2/Terminal에서 SSH 창을 열 때 macOS가 보여주는 자동화 권한 안내 문구 -->
+    <key>NSAppleEventsUsageDescription</key>
+    <string>iTerm2 또는 Terminal에서 서버 접속 창을 열기 위해 터미널 앱을 제어합니다.</string>
+</dict>
+</plist>
