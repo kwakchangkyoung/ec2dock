@@ -81,6 +81,18 @@ macOS용 AWS EC2 서버 접속 관리 앱. 요구사항 기준 문서: `EC2Dock_
 
 SwiftTerm은 1.11.2로 고정했습니다. 1.12.0부터 Metal 셰이더가 포함되어 Xcode의 `metal` 컴파일러가 필요하기 때문입니다. Xcode로 빌드하게 되면 최신 버전으로 올릴 수 있습니다.
 
+## 앱으로 설치
+
+```bash
+./scripts/build-app.sh
+```
+
+```bash
+cp -R dist/EC2Dock.app /Applications/
+```
+
+ad-hoc 서명이라 이 Mac 전용입니다. 다른 Mac에 배포하려면 Developer ID 서명과 공증이 필요합니다. 자세한 내용은 `docs/DEPLOYMENT.md`를 참고하세요.
+
 ## 구조
 
 ```
@@ -93,6 +105,9 @@ Sources/EC2DockCore/      UI 의존성 없는 계층
   AppState.swift          화면이 관찰하는 상태 (서비스는 주입)
 Sources/EC2Dock/          SwiftUI 앱 (Dashboard, ServerDetail, ConnectionSettings, Preferences)
 Tests/EC2DockCoreTests/   Swift Testing 단위/통합 테스트
+Packaging/                Info.plist, 엔타이틀먼트, 앱 아이콘
+scripts/                  .app 번들·zip·dmg 생성, 아이콘 생성
+docs/DEPLOYMENT.md        서명·공증·배포·iCloud 컨테이너 이전 가이드
 ```
 
 ## 실제 AWS 계정 연동

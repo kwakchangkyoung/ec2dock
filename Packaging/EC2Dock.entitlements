@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened Runtime용 엔타이틀먼트.
+  - App Sandbox는 쓰지 않는다: aws/ssh 실행과 ~/.aws, ~/.ssh 접근이 필요하다 (Mac App Store 배포 대상 아님).
+  - iCloud 앱 컨테이너는 프로비저닝 프로파일이 필요하므로 Developer ID 준비 후 추가한다 (docs/DEPLOYMENT.md).
+-->
+<plist version="1.0">
+<dict>
+    <!-- iTerm2/Terminal 제어 (AppleScript) -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+</dict>
+</plist>
