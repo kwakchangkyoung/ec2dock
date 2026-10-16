@@ -111,7 +111,7 @@ struct ServerDetailView: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button("터미널로 이동") {
-                        terminals.activeSessionID = openSessions.last?.id
+                        if let last = openSessions.last { terminals.show(paneID: last.id) }
                     }
                 }
             }

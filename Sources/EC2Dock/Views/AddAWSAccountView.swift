@@ -186,7 +186,7 @@ struct AddAWSAccountView: View {
             if !wasLoggedIn { watchLogin(profile: profile, controller: controller) }
         } catch {
             step = .form
-            errorMessage = TerminalSessionView.describe(error)
+            errorMessage = TerminalErrorText.describe(error)
         }
     }
 

@@ -3,15 +3,28 @@ import EC2DockCore
 import Observation
 import SwiftTerm
 
-/// 메인 창 안에서 열린 내장 터미널 세션들.
+/// 메인 창 안에서 열린 내장 터미널 탭과 분할 칸들.
 /// 터미널 뷰(와 ssh 프로세스)는 SwiftUI 화면 수명과 분리해 여기서 보관하므로,
-/// 탭이나 서버를 바꿔도 세션이 끊기지 않고 사용자가 탭을 닫을 때만 종료된다.
+/// 탭·칸·서버를 바꿔도 세션이 끊기지 않고 사용자가 칸이나 탭을 닫을 때만 종료된다.
 @MainActor
 @Observable
 final class TerminalSessionStore {
-    private(set) var sessions: [TerminalSessionController] = []
+    /// 분할 요청. 접속 준비(Production 확인 포함)는 화면(TerminalTabView)이 처리한다.
+    struct SplitRequest: Equatable {
+        let id = UUID()
+        let tabID: UUID
+        let paneID: UUID
+        let profileID: String
+        let axis: SplitAxis
+    }
+
+    private(set) var tabs: [TerminalTabLayout] = []
+    private(set) var controllers: [UUID: TerminalSessionController] = [:]
     /// nil이면 "서버 정보" 탭
-    var activeSessionID: UUID?
+    var activeTabID: UUID?
+    var pendingSplit: SplitRequest?
+    /// 연결 중인 칸을 단축키로 닫으려 할 때 확인을 받는다.
+    var pendingClosePaneID: UUID?
 
     /// 로그인 탭이 성공적으로 끝났을 때 돌아갈 화면과 다시 시도할 작업
     private struct LoginContext {
@@ -20,13 +33,173 @@ final class TerminalSessionStore {
         let onSuccess: @MainActor () async -> Void
     }
     @ObservationIgnored private var loginContexts: [UUID: LoginContext] = [:]
+    @ObservationIgnored private var mouseMonitor: Any?
 
+    init() {
+        // SwiftTerm 뷰의 포커스 변화는 밖에서 알 수 없어, 클릭한 위치로 어느 칸인지 판별한다.
+        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            MainActor.assumeIsolated { self?.focusPane(clickedBy: event) }
+            return event
+        }
+    }
+
+    // MARK: 조회
+
+    var activeTab: TerminalTabLayout? {
+        tabs.first { $0.id == activeTabID }
+    }
+
+    func controller(id: UUID) -> TerminalSessionController? {
+        controllers[id]
+    }
+
+    func tab(containing paneID: UUID) -> TerminalTabLayout? {
+        tabs.first { $0.contains(paneID) }
+    }
+
+    /// 해당 서버에 열린 ssh 세션 (목록 표시와 "터미널로 이동"에 사용)
+    func sessions(for profileID: String) -> [TerminalSessionController] {
+        tabs.flatMap(\.root.paneIDs).compactMap { controllers[$0] }.filter { $0.session.profileID == profileID }
+    }
+
+    /// 포커스된 칸이 ssh 세션이면 같은 서버로 분할할 수 있다.
+    var canSplit: Bool {
+        guard let tab = activeTab else { return false }
+        return controllers[tab.focusedPaneID]?.session.profileID != nil
+    }
+
+    // MARK: 열기·닫기
+
+    /// 새 탭으로 연다.
     func open(_ session: EmbeddedTerminalSession) {
+        addController(for: session)
+        let tab = TerminalTabLayout(firstPane: session.id)
+        tabs.append(tab)
+        activeTabID = tab.id
+    }
+
+    /// 지금 탭의 `paneID` 옆에 분할로 연다.
+    func insertSplit(_ session: EmbeddedTerminalSession, besides paneID: UUID, axis: SplitAxis) {
+        guard let index = tabs.firstIndex(where: { $0.contains(paneID) }) else {
+            open(session)
+            return
+        }
+        addController(for: session)
+        tabs[index].root = tabs[index].root.inserting(session.id, besides: paneID, axis: axis)
+        tabs[index].focusedPaneID = session.id
+        activeTabID = tabs[index].id
+    }
+
+    /// 다시 연결/다시 로그인: 같은 칸 자리에 새 세션을 넣는다.
+    func replace(id: UUID, with session: EmbeddedTerminalSession) {
+        let context = loginContexts.removeValue(forKey: id)
+        if let context { loginContexts[session.id] = context }
+        if let index = tabs.firstIndex(where: { $0.contains(id) }) {
+            controllers.removeValue(forKey: id)?.terminate()
+            addController(for: session)
+            tabs[index].root = tabs[index].root.replacing(id, with: session.id)
+            tabs[index].focusedPaneID = session.id
+            activeTabID = tabs[index].id
+        } else {
+            open(session)
+        }
+        // 로그인 다시 시도라면 완료 확인도 다시 시작한다.
+        if let context { watchLogin(id: session.id, isLoggedIn: context.isLoggedIn) }
+    }
+
+    /// 칸 하나를 닫는다. 마지막 칸이면 탭도 닫는다.
+    func close(id: UUID) {
+        loginContexts[id] = nil
+        controllers.removeValue(forKey: id)?.terminate()
+        guard let index = tabs.firstIndex(where: { $0.contains(id) }) else { return }
+        if let remaining = tabs[index].root.removing(id) {
+            tabs[index].root = remaining
+            if tabs[index].focusedPaneID == id {
+                tabs[index].focusedPaneID = remaining.paneIDs.first ?? id
+            }
+        } else {
+            removeTab(at: index)
+        }
+    }
+
+    /// 탭과 그 안의 모든 칸을 닫는다.
+    func closeTab(id: UUID) {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        for paneID in tabs[index].root.paneIDs {
+            loginContexts[paneID] = nil
+            controllers.removeValue(forKey: paneID)?.terminate()
+        }
+        removeTab(at: index)
+    }
+
+    /// 닫은 탭이 보이던 탭이면 이웃 탭(없으면 "서버 정보")으로 옮긴다.
+    private func removeTab(at index: Int) {
+        let removed = tabs.remove(at: index)
+        guard activeTabID == removed.id else { return }
+        activeTabID = tabs.isEmpty ? nil : tabs[min(index, tabs.count - 1)].id
+    }
+
+    private func addController(for session: EmbeddedTerminalSession) {
         let controller = TerminalSessionController(session: session)
         controller.onExit = { [weak self] id, exitCode in self?.handleExit(id: id, exitCode: exitCode) }
-        sessions.append(controller)
-        activeSessionID = session.id
+        controllers[session.id] = controller
     }
+
+    // MARK: 포커스·이동 (단축키)
+
+    /// 칸을 보이게 하고 포커스를 준다.
+    func show(paneID: UUID) {
+        guard let index = tabs.firstIndex(where: { $0.contains(paneID) }) else { return }
+        tabs[index].focusedPaneID = paneID
+        activeTabID = tabs[index].id
+    }
+
+    func focusAdjacentPane(offset: Int) {
+        guard let tab = activeTab else { return }
+        show(paneID: tab.pane(after: tab.focusedPaneID, offset: offset))
+    }
+
+    func selectAdjacentTab(offset: Int) {
+        activeTabID = TerminalTabNavigation.adjacent(to: activeTabID, offset: offset, tabs: tabs.map(\.id))
+    }
+
+    /// ⌘1~⌘9: n번째 터미널 탭, ⌘0: 서버 정보
+    func selectTab(number: Int) {
+        if let target = TerminalTabNavigation.tab(number: number, tabs: tabs.map(\.id)) {
+            activeTabID = target
+        }
+    }
+
+    func requestSplit(axis: SplitAxis) {
+        guard let tab = activeTab, let profileID = controllers[tab.focusedPaneID]?.session.profileID else {
+            NSSound.beep()
+            return
+        }
+        pendingSplit = SplitRequest(tabID: tab.id, paneID: tab.focusedPaneID, profileID: profileID, axis: axis)
+    }
+
+    /// 단축키로 포커스된 칸을 닫는다. 연결 중이면 확인을 받는다.
+    func requestCloseFocusedPane() {
+        guard let tab = activeTab else { return }
+        if controllers[tab.focusedPaneID]?.isRunning == true {
+            pendingClosePaneID = tab.focusedPaneID
+        } else {
+            close(id: tab.focusedPaneID)
+        }
+    }
+
+    private func focusPane(clickedBy event: NSEvent) {
+        guard let tab = activeTab, tab.root.paneIDs.count > 1 else { return }
+        for paneID in tab.root.paneIDs {
+            guard let view = controllers[paneID]?.terminalView, view.window === event.window else { continue }
+            if view.bounds.contains(view.convert(event.locationInWindow, from: nil)) {
+                if tab.focusedPaneID != paneID { show(paneID: paneID) }
+                return
+            }
+        }
+    }
+
+    // MARK: AWS 로그인 탭
 
     /// AWS 로그인 탭을 열고, 로그인이 끝나면 탭을 닫고 원래 화면으로 돌아가 `onSuccess`를 실행한다.
     /// 로그인 명령이 종료 코드 0으로 끝나거나, `isLoggedIn` 확인이 성공하면 끝난 것으로 본다
@@ -36,7 +209,7 @@ final class TerminalSessionStore {
         isLoggedIn: @escaping @MainActor () async -> Bool,
         onSuccess: @escaping @MainActor () async -> Void
     ) {
-        loginContexts[session.id] = LoginContext(returnTo: activeSessionID, isLoggedIn: isLoggedIn, onSuccess: onSuccess)
+        loginContexts[session.id] = LoginContext(returnTo: activeTabID, isLoggedIn: isLoggedIn, onSuccess: onSuccess)
         open(session)
         watchLogin(id: session.id, isLoggedIn: isLoggedIn)
     }
@@ -45,7 +218,7 @@ final class TerminalSessionStore {
         Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
-                // 탭이 닫혔거나 다시 시도로 교체되면 그만둔다.
+                // 칸이 닫혔거나 다시 시도로 교체되면 그만둔다.
                 guard let self, let controller = self.controller(id: id), controller.isRunning,
                       self.loginContexts[id] != nil else { return }
                 if await isLoggedIn() {
@@ -64,44 +237,12 @@ final class TerminalSessionStore {
     private func completeLogin(id: UUID) {
         guard let context = loginContexts.removeValue(forKey: id) else { return }
         close(id: id)
-        if let returnTo = context.returnTo, controller(id: returnTo) != nil {
-            activeSessionID = returnTo
+        if let returnTo = context.returnTo, tabs.contains(where: { $0.id == returnTo }) {
+            activeTabID = returnTo
+        } else if context.returnTo == nil {
+            activeTabID = nil
         }
         Task { await context.onSuccess() }
-    }
-
-    func controller(id: UUID) -> TerminalSessionController? {
-        sessions.first { $0.id == id }
-    }
-
-    /// 해당 서버에 열린 ssh 세션 (목록 표시와 "터미널로 이동"에 사용)
-    func sessions(for profileID: String) -> [TerminalSessionController] {
-        sessions.filter { $0.session.profileID == profileID }
-    }
-
-    /// 다시 연결/다시 로그인: 같은 탭 위치에 새 세션을 넣는다.
-    func replace(id: UUID, with session: EmbeddedTerminalSession) {
-        let context = loginContexts.removeValue(forKey: id)
-        if let context { loginContexts[session.id] = context }
-        if let index = sessions.firstIndex(where: { $0.id == id }) {
-            sessions[index].terminate()
-            let controller = TerminalSessionController(session: session)
-            controller.onExit = { [weak self] id, exitCode in self?.handleExit(id: id, exitCode: exitCode) }
-            sessions[index] = controller
-            activeSessionID = session.id
-        } else {
-            open(session)
-        }
-        // 로그인 다시 시도라면 완료 확인도 다시 시작한다.
-        if let context { watchLogin(id: session.id, isLoggedIn: context.isLoggedIn) }
-    }
-
-    func close(id: UUID) {
-        loginContexts[id] = nil
-        guard let index = sessions.firstIndex(where: { $0.id == id }) else { return }
-        sessions[index].terminate()
-        sessions.remove(at: index)
-        if activeSessionID == id { activeSessionID = nil }
     }
 }
 

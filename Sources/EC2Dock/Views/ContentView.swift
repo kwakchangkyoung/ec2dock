@@ -35,7 +35,7 @@ struct ContentView: View {
         }
         // 목록에서 서버를 고르면 그 서버 정보를 보여준다. 열린 터미널 탭은 유지된다.
         .onChange(of: selectedServerID) {
-            terminals.activeSessionID = nil
+            terminals.activeTabID = nil
         }
         // 시작 시에는 AWS를 호출하지 않고 캐시만 보여준다(재조회는 버튼으로).
         // 로컬 AWS CLI 프로필 목록만 읽어 둔다. 자동 새로고침은 설정에서 켠 경우에만 동작한다.
