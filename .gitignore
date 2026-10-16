@@ -1,0 +1,12 @@
+# SwiftPM / Xcode 빌드 산출물
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# 배포 산출물
+dist/
+
+# macOS
+.DS_Store
