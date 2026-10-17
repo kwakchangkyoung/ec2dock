@@ -9,9 +9,16 @@ public enum SplitAxis: Sendable {
 }
 
 /// 터미널 탭 안의 분할 배치. 잎(pane)은 세션 ID다.
-public indirect enum PaneNode: Equatable, Sendable {
+public indirect enum PaneNode: Identifiable, Equatable, Sendable {
     case pane(UUID)
     case split(id: UUID, axis: SplitAxis, children: [PaneNode])
+
+    public var id: UUID {
+        switch self {
+        case .pane(let id): id
+        case .split(let id, _, _): id
+        }
+    }
 
     /// 화면 순서(왼쪽→오른쪽, 위→아래)의 세션 ID
     public var paneIDs: [UUID] {

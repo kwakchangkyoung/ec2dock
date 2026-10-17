@@ -40,6 +40,40 @@ struct ProcessCommandRunnerTests {
         #expect(ContinuousClock.now - start < .seconds(5))
     }
 
+    @Test func timeoutKillsProcessIgnoringSIGTERM() async {
+        let start = ContinuousClock.now
+        await #expect(throws: CommandRunnerError.timedOut) {
+            try await runner.run(URL(fileURLWithPath: "/bin/sh"),
+                                 arguments: ["-c", "trap '' TERM; exec /bin/sleep 3"],
+                                 environment: [:], timeout: .milliseconds(200))
+        }
+        #expect(ContinuousClock.now - start < .seconds(2))
+    }
+
+    @Test func cancellationKillsProcessIgnoringSIGTERM() async {
+        let task = Task {
+            try await runner.run(URL(fileURLWithPath: "/bin/sh"),
+                                 arguments: ["-c", "trap '' TERM; exec /bin/sleep 3"],
+                                 environment: [:], timeout: .seconds(10))
+        }
+        try? await Task.sleep(for: .milliseconds(200))
+        let start = ContinuousClock.now
+        task.cancel()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(ContinuousClock.now - start < .seconds(2))
+    }
+
+    @Test(arguments: ["/bin/sleep 3 & exit 0", "trap '' TERM; /bin/sleep 3 & exit 0"])
+    func timeoutIncludesPipesHeldOpenByChild(script: String) async {
+        let start = ContinuousClock.now
+        await #expect(throws: CommandRunnerError.timedOut) {
+            try await runner.run(URL(fileURLWithPath: "/bin/sh"),
+                                 arguments: ["-c", script],
+                                 environment: [:], timeout: .milliseconds(200))
+        }
+        #expect(ContinuousClock.now - start < .seconds(2))
+    }
+
     @Test func missingExecutableFailsToLaunch() async {
         await #expect(throws: CommandRunnerError.launchFailed) {
             try await runner.run(URL(fileURLWithPath: "/nonexistent/aws"), arguments: [],

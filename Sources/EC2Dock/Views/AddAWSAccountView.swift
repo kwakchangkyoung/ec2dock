@@ -99,7 +99,7 @@ struct AddAWSAccountView: View {
             .padding(10)
             TerminalHostView(terminalView: controller.terminalView)
                 .padding(8)
-                .background(Color(nsColor: TerminalSessionController.background))
+                .background(Color(nsColor: controller.backgroundColor))
             Divider()
             HStack {
                 if case .exited(let code) = controller.status, code != 0 {
@@ -208,6 +208,7 @@ struct AddAWSAccountView: View {
     /// 문제가 없으면 시트를 자동으로 닫는다.
     private func finish(profile: String, controller: TerminalSessionController) async {
         guard isCurrent(controller) else { return }
+        step = .finishing
         controller.terminate()
         await complete(profile: profile)
     }

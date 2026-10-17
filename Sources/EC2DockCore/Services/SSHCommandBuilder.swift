@@ -100,10 +100,12 @@ public struct SSHCommandBuilder: Sendable {
     }
 
     /// 일반 파일이고 그룹/기타 사용자 권한이 없어야 한다 (OpenSSH와 같은 기준).
+    /// 심볼릭 링크인 경우 실제 가리키는 대상 파일의 권한을 확인한다.
     public static func checkKeyFile(_ path: String) -> KeyFileStatus {
+        let resolvedPath = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
         var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), !isDirectory.boolValue,
-              let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+        guard FileManager.default.fileExists(atPath: resolvedPath, isDirectory: &isDirectory), !isDirectory.boolValue,
+              let attributes = try? FileManager.default.attributesOfItem(atPath: resolvedPath),
               let permissions = attributes[.posixPermissions] as? Int else {
             return .missing
         }

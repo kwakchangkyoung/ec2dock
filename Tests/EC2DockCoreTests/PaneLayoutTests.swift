@@ -69,6 +69,15 @@ struct PaneLayoutTests {
         #expect(tab.contains(c))
         #expect(!tab.contains(d))
     }
+
+    @Test func nodeIdentity() {
+        let pane = PaneNode.pane(a)
+        #expect(pane.id == a)
+
+        let splitId = UUID()
+        let split = PaneNode.split(id: splitId, axis: .horizontal, children: [pane])
+        #expect(split.id == splitId)
+    }
 }
 
 @Suite("TerminalTabNavigation")

@@ -62,7 +62,7 @@ public struct SyncMergeResult: Equatable, Sendable {
 
 /// 마지막 동기화 시점(base)을 기준으로 한 3-way 병합 (설계서 9.3).
 /// 수정 시각만 비교해 조용히 덮어쓰지 않는다. 양쪽이 모두 바뀌면 충돌로 남긴다.
-/// 서버 삭제 기능이 아직 없으므로 한쪽에만 있는 프로필은 추가로 취급한다.
+/// base에 있던 프로필이 한쪽에서 삭제되었고 다른 쪽에서 변경되지 않은 경우 삭제를 전파한다.
 public enum ProfileSyncMerger {
     public static func merge(local: [ServerProfile], remote: [ServerProfile], base: [ServerProfile]) -> SyncMergeResult {
         let localByID = Dictionary(local.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -74,16 +74,31 @@ public enum ProfileSyncMerger {
         var mergedBase = baseByID
         var conflicts: [SyncConflict] = []
 
-        for id in Set(localByID.keys).union(remoteByID.keys) {
+        for id in Set(localByID.keys).union(remoteByID.keys).union(baseByID.keys) {
+            let baseProfile = baseByID[id]
             switch (localByID[id], remoteByID[id]) {
             case (let l?, nil):
-                mergedRemote[id] = l
-                mergedBase[id] = l
+                if let b = baseProfile, l.hasSameContent(as: b) {
+                    // remote에서 삭제되었고 local은 base와 같으므로 삭제 전파
+                    mergedLocal.removeValue(forKey: id)
+                    mergedBase.removeValue(forKey: id)
+                } else {
+                    // local에서 새로 추가되었거나, remote에서 삭제되었지만 local에서 수정된 경우
+                    mergedRemote[id] = l
+                    mergedBase[id] = l
+                }
             case (nil, let r?):
-                mergedLocal[id] = r
-                mergedBase[id] = r
+                if let b = baseProfile, r.hasSameContent(as: b) {
+                    // local에서 삭제되었고 remote는 base와 같으므로 삭제 전파
+                    mergedRemote.removeValue(forKey: id)
+                    mergedBase.removeValue(forKey: id)
+                } else {
+                    // remote에서 새로 추가되었거나, local에서 삭제되었지만 remote에서 수정된 경우
+                    mergedLocal[id] = r
+                    mergedBase[id] = r
+                }
             case (let l?, let r?):
-                switch resolve(local: l, remote: r, base: baseByID[id]) {
+                switch resolve(local: l, remote: r, base: baseProfile) {
                 case .same:
                     mergedBase[id] = l
                 case .takeLocal:
@@ -96,7 +111,7 @@ public enum ProfileSyncMerger {
                     conflicts.append(SyncConflict(local: l, remote: r))
                 }
             case (nil, nil):
-                break
+                mergedBase.removeValue(forKey: id)
             }
         }
 

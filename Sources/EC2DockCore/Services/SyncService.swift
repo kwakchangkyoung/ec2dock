@@ -83,6 +83,12 @@ public enum SyncStatus: Equatable, Sendable {
 public protocol SyncService: Sendable {
     func availability() async -> SyncAvailability
     func load() async throws -> SyncSnapshot
-    /// 문서를 저장하고, 처리한 충돌 파일 버전은 정리한다.
-    func save(_ document: SyncedProfilesDocument) async throws
+    /// 문서를 저장하고, 호출자가 병합을 완료한 충돌 버전만 해결 처리한다.
+    func save(_ document: SyncedProfilesDocument, resolvingConflictVersions: [SyncedProfilesDocument]) async throws
+}
+
+extension SyncService {
+    public func save(_ document: SyncedProfilesDocument) async throws {
+        try await save(document, resolvingConflictVersions: [])
+    }
 }

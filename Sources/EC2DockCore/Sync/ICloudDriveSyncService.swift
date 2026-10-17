@@ -50,13 +50,14 @@ public struct ICloudDriveSyncService: SyncService {
 
             let data = try Self.coordinatedRead(url)
             let document = try Self.decode(data)
-            let versions = (NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? [])
-                .compactMap { version in (try? Data(contentsOf: version.url)).flatMap { try? Self.decode($0) } }
+            let versions = try (NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? [])
+                .map { version in try Self.decode(Data(contentsOf: version.url)) }
             return SyncSnapshot(document: document, conflictVersions: versions)
         }
     }
 
-    public func save(_ document: SyncedProfilesDocument) async throws {
+    public func save(_ document: SyncedProfilesDocument,
+                     resolvingConflictVersions: [SyncedProfilesDocument]) async throws {
         if case .unavailable(let reason) = await availability() { throw SyncError.unavailable(reason) }
         let url = fileURL
         let directory = directory
@@ -68,10 +69,12 @@ public struct ICloudDriveSyncService: SyncService {
                 throw SyncError.fileAccess("폴더를 만들 수 없습니다.")
             }
             try Self.coordinatedWrite(data, to: url)
-            // 병합에 반영한 충돌 파일 버전은 해결 처리한다.
-            if let versions = NSFileVersion.unresolvedConflictVersionsOfItem(at: url), !versions.isEmpty {
-                versions.forEach { $0.isResolved = true }
-                try? NSFileVersion.removeOtherVersionsOfItem(at: url)
+            // 읽은 뒤 새로 생겼거나 해석할 수 없는 버전은 보존한다.
+            for version in NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? [] {
+                guard let data = try? Data(contentsOf: version.url),
+                      let document = try? Self.decode(data),
+                      resolvingConflictVersions.contains(document) else { continue }
+                version.isResolved = true
             }
         }
     }

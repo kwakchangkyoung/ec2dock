@@ -12,7 +12,7 @@ public struct TerminalConnectionService: ConnectionService {
         self.launcher = launcher
     }
 
-    public func connect(_ target: ConnectionTarget, in terminal: TerminalApp) async throws -> ConnectionOutcome {
+    public func connect(_ target: ConnectionTarget, in terminal: TerminalApp, preferNewTab: Bool) async throws -> ConnectionOutcome {
         let command = try builder.command(for: target)
         var destination = "\(target.profile.sshUsername)@\(target.address ?? "")"
         if let bastion = target.bastion {
@@ -24,7 +24,7 @@ public struct TerminalConnectionService: ConnectionService {
                                                      isProduction: target.profile.isProduction, command: command))
         }
         do {
-            try await launcher.launch(command, in: terminal)
+            try await launcher.launch(command, in: terminal, newTab: preferNewTab)
         } catch let error as TerminalLaunchError {
             switch error {
             case .appNotInstalled(let app): throw ConnectionError.terminalUnavailable(app)

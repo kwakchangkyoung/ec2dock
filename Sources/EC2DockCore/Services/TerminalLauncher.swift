@@ -21,5 +21,12 @@ public enum TerminalLaunchError: Error, Equatable, Sendable {
 /// iTerm2 / Terminal 실행 계층. Phase 3에서 AppleScript 구현으로 대체한다.
 public protocol TerminalLauncher: Sendable {
     func isAvailable(_ app: TerminalApp) async -> Bool
-    func launch(_ command: TerminalCommand, in app: TerminalApp) async throws
+    /// `newTab`이 true면 열린 창이 있을 때 새 탭으로 연다 (iTerm2만 지원, 그 외에는 새 창).
+    func launch(_ command: TerminalCommand, in app: TerminalApp, newTab: Bool) async throws
+}
+
+extension TerminalLauncher {
+    public func launch(_ command: TerminalCommand, in app: TerminalApp) async throws {
+        try await launch(command, in: app, newTab: false)
+    }
 }

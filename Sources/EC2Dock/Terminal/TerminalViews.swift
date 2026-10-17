@@ -68,17 +68,30 @@ private struct SessionTabBar: View {
             if terminals.activeTab != nil {
                 Divider().frame(height: 18)
                 HStack(spacing: 2) {
+                    Button { terminals.showFindBar() } label: {
+                        Image(systemName: "magnifyingglass")
+                    }
+                    .help("터미널에서 찾기 (⌘F)")
+                    .accessibilityLabel("터미널에서 찾기")
                     Button { terminals.requestSplit(axis: .horizontal) } label: {
                         Image(systemName: "rectangle.split.2x1")
                     }
                     .help("좌우로 분할 (⌘D)")
+                    .accessibilityLabel("좌우로 분할")
+                    .disabled(!terminals.canSplit)
                     Button { terminals.requestSplit(axis: .vertical) } label: {
                         Image(systemName: "rectangle.split.1x2")
                     }
                     .help("위아래로 분할 (⇧⌘D)")
+                    .accessibilityLabel("위아래로 분할")
+                    .disabled(!terminals.canSplit)
+                    Button { terminals.isFocusMode.toggle() } label: {
+                        Image(systemName: terminals.isFocusMode ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                    }
+                    .help(terminals.isFocusMode ? "목록 다시 보기 (⇧⌘F)" : "터미널 넓게 보기 (⇧⌘F)")
+                    .accessibilityLabel(terminals.isFocusMode ? "목록 다시 보기" : "터미널 넓게 보기")
                 }
                 .buttonStyle(.borderless)
-                .disabled(!terminals.canSplit)
                 .padding(.horizontal, 8)
             }
         }
@@ -160,6 +173,7 @@ private struct TabButton<Content: View>: View {
                 .opacity(isSelected || isHovering ? 1 : 0.4)
                 .padding(.trailing, 4)
                 .help("탭 닫기")
+                .accessibilityLabel("탭 닫기")
             }
         }
         .background(
@@ -197,8 +211,14 @@ struct TerminalTabView: View {
     var body: some View {
         Group {
             if let tab = terminals.tabs.first(where: { $0.id == tabID }) {
-                PaneTreeView(node: tab.root, tab: tab)
-                    .navigationTitle(navigationTitle(tab))
+                VStack(spacing: 0) {
+                    if terminals.isFindBarVisible {
+                        TerminalFindBar()
+                        Divider()
+                    }
+                    PaneTreeView(node: tab.root, tab: tab)
+                }
+                .navigationTitle(navigationTitle(tab))
             }
         }
         .task(id: terminals.pendingSplit) {
@@ -272,13 +292,13 @@ private struct PaneTreeView: View {
         case .split(_, let axis, let children):
             if axis == .horizontal {
                 HSplitView {
-                    ForEach(Array(children.enumerated()), id: \.offset) { _, child in
+                    ForEach(children) { child in
                         AnyView(PaneTreeView(node: child, tab: tab)).frame(minWidth: 160)
                     }
                 }
             } else {
                 VSplitView {
-                    ForEach(Array(children.enumerated()), id: \.offset) { _, child in
+                    ForEach(children) { child in
                         AnyView(PaneTreeView(node: child, tab: tab)).frame(minHeight: 90)
                     }
                 }
@@ -314,9 +334,9 @@ struct TerminalPaneView: View {
             if controller.session.isProduction {
                 Rectangle().fill(.red).frame(height: 3)
             }
-            TerminalHostView(terminalView: controller.terminalView, isFocused: isFocused)
+            TerminalHostView(terminalView: controller.terminalView, isFocused: isFocused && !terminals.isFindBarVisible)
                 .padding(8)
-                .background(Color(nsColor: TerminalSessionController.background))
+                .background(Color(nsColor: controller.backgroundColor))
             if case .exited(let code) = controller.status {
                 exitBar(controller, code: code)
             }
@@ -350,7 +370,8 @@ struct TerminalPaneView: View {
                 Image(systemName: "xmark").font(.caption2.weight(.semibold))
             }
             .buttonStyle(.borderless)
-            .help("이 칸 닫기 (⌥⌘W)")
+            .help("이 칸 닫기 (⌘W)")
+            .accessibilityLabel("이 칸 닫기")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
@@ -548,5 +569,48 @@ extension View {
             접속 주소: \(target.address ?? "-") (\(target.instance.lastFetchedAt.formatted(.relative(presentation: .named))) 조회)
             """)
         }
+    }
+}
+
+// MARK: - 찾기 막대
+
+/// 포커스된 칸의 출력에서 찾는다. Return: 다음, ⇧Return: 이전, Esc: 닫기
+private struct TerminalFindBar: View {
+    @Environment(TerminalSessionStore.self) private var terminals
+    @FocusState private var isFieldFocused: Bool
+    @ViewState private var notFound = false
+
+    var body: some View {
+        @Bindable var terminals = terminals
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("터미널에서 찾기", text: $terminals.findQuery)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 260)
+                .focused($isFieldFocused)
+                .onSubmit { search(backwards: NSEvent.modifierFlags.contains(.shift)) }
+                .onExitCommand { terminals.hideFindBar() }
+            Button { search(backwards: true) } label: { Image(systemName: "chevron.up") }
+                .help("이전 결과 (⇧⌘G)")
+                .accessibilityLabel("이전 결과")
+            Button { search(backwards: false) } label: { Image(systemName: "chevron.down") }
+                .help("다음 결과 (⌘G)")
+                .accessibilityLabel("다음 결과")
+            if notFound {
+                Text("결과 없음").font(.caption).foregroundStyle(.orange)
+            }
+            Spacer()
+            Button("완료") { terminals.hideFindBar() }
+        }
+        .buttonStyle(.borderless)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(.bar)
+        .onAppear { isFieldFocused = true }
+        .onChange(of: terminals.findQuery) { notFound = false }
+    }
+
+    private func search(backwards: Bool) {
+        notFound = !terminals.findQuery.isEmpty && !terminals.find(backwards: backwards)
     }
 }

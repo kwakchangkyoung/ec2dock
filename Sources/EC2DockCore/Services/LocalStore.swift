@@ -8,6 +8,8 @@ public enum LocalStoreFile: String, CaseIterable, Sendable {
     case instanceCache = "InstanceCache.json"
     /// 마지막으로 iCloud와 맞춘 프로필 (3-way 병합 기준)
     case syncBase = "SyncBase.json"
+    /// 아직 처리 중인 오프라인 파일 버전에서 사용자가 해결한 프로필
+    case syncVersionResolutions = "SyncVersionResolutions.json"
     /// 계정 ID → AWS CLI 프로필 (이 Mac의 프로필 이름이므로 동기화하지 않음)
     case accountProfiles = "AccountProfiles.json"
 }

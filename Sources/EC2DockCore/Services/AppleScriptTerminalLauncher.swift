@@ -20,7 +20,7 @@ public struct AppleScriptTerminalLauncher: TerminalLauncher {
         await isInstalled(app)
     }
 
-    public func launch(_ command: TerminalCommand, in app: TerminalApp) async throws {
+    public func launch(_ command: TerminalCommand, in app: TerminalApp, newTab: Bool) async throws {
         guard app.isExternal else { throw TerminalLaunchError.launchFailed("내장 터미널은 외부 앱으로 실행하지 않습니다.") }
         guard await isInstalled(app) else { throw TerminalLaunchError.appNotInstalled(app) }
 
@@ -29,7 +29,7 @@ public struct AppleScriptTerminalLauncher: TerminalLauncher {
             // 처음 실행 시 macOS 자동화 권한 확인 창이 떠서 사용자 응답을 기다릴 수 있다.
             result = try await runner.run(
                 URL(fileURLWithPath: "/usr/bin/osascript"),
-                arguments: Self.scriptArguments(for: app) + [command.shellCommandLine],
+                arguments: Self.scriptArguments(for: app, newTab: newTab) + [command.shellCommandLine],
                 environment: ["PATH": "/usr/bin:/bin"],
                 timeout: .seconds(120))
         } catch {
@@ -47,9 +47,25 @@ public struct AppleScriptTerminalLauncher: TerminalLauncher {
     }
 
     /// `osascript -e ... -e ...` 인자. 명령은 run 핸들러의 `item 1 of argv`로 받는다.
-    static func scriptArguments(for app: TerminalApp) -> [String] {
+    static func scriptArguments(for app: TerminalApp, newTab: Bool = false) -> [String] {
         let lines: [String]
         switch app {
+        case .iTerm2 where newTab:
+            // 열린 창이 있으면 그 창의 새 탭, 없으면 새 창
+            lines = [
+                "on run argv",
+                "tell application id \"\(TerminalApp.iTerm2.rawValue)\"",
+                "activate",
+                "if (count of windows) is 0 then",
+                "set targetWindow to (create window with default profile)",
+                "else",
+                "set targetWindow to current window",
+                "tell targetWindow to create tab with default profile",
+                "end if",
+                "tell current session of targetWindow to write text (item 1 of argv)",
+                "end tell",
+                "end run",
+            ]
         case .iTerm2:
             lines = [
                 "on run argv",

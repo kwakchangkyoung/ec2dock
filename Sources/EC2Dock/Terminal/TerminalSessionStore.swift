@@ -35,12 +35,104 @@ final class TerminalSessionStore {
     @ObservationIgnored private var loginContexts: [UUID: LoginContext] = [:]
     @ObservationIgnored private var mouseMonitor: Any?
 
+    /// 터미널 탭을 보는 동안 사이드바와 목록을 접는다 (ContentView가 열 표시와 맞춘다).
+    var isFocusMode = false
+    /// 내장 터미널 글꼴·색상. 바뀌면 열린 모든 칸에 바로 적용한다.
+    var appearance = TerminalAppearance.standard {
+        didSet {
+            guard appearance != oldValue else { return }
+            controllers.values.forEach { $0.apply(appearance) }
+        }
+    }
+    /// 터미널 찾기 막대 (⌘F)
+    var isFindBarVisible = false
+    var findQuery = ""
+    /// 메인 창. ⌘W를 이 창에서만 가로챈다.
+    @ObservationIgnored weak var mainWindow: NSWindow?
+
+    @ObservationIgnored private var keyMonitor: Any?
+
     init() {
         // SwiftTerm 뷰의 포커스 변화는 밖에서 알 수 없어, 클릭한 위치로 어느 칸인지 판별한다.
         mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
             MainActor.assumeIsolated { self?.focusPane(clickedBy: event) }
             return event
         }
+        // ⌘W가 메인 창(과 그 안의 모든 ssh 세션)을 바로 닫지 않게 한다.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            let consumed = MainActor.assumeIsolated { self?.handleCloseShortcut(event) ?? false }
+            return consumed ? nil : event
+        }
+    }
+
+    isolated deinit {
+        if let mouseMonitor {
+            NSEvent.removeMonitor(mouseMonitor)
+        }
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+        }
+    }
+
+    // MARK: 세션 보호
+
+    /// 연결 중인 ssh·로그인 세션 수 (종료·창 닫기 확인에 사용)
+    var runningSessionCount: Int {
+        controllers.values.filter(\.isRunning).count
+    }
+
+    /// 메인 창에서 ⌘W:
+    /// - 터미널 탭을 보고 있으면 포커스된 칸을 닫는다 (연결 중이면 확인).
+    /// - 서버 정보를 보고 있는데 연결 중인 세션이 있으면, 창을 닫을지 확인한다.
+    /// 가로챘으면 true (기본 동작인 창 닫기를 막는다).
+    private func handleCloseShortcut(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "w",
+              let window = event.window, window === mainWindow else { return false }
+        if activeTab != nil {
+            requestCloseFocusedPane()
+            return true
+        }
+        guard runningSessionCount > 0 else { return false }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "연결 중인 터미널 \(runningSessionCount)개가 있습니다"
+        alert.informativeText = "창을 닫으면 모든 ssh 연결이 끊깁니다."
+        alert.addButton(withTitle: "창 닫기")
+        alert.addButton(withTitle: "취소")
+        alert.beginSheetModal(for: window) { [weak self, weak window] response in
+            guard response == .alertFirstButtonReturn else { return }
+            MainActor.assumeIsolated {
+                self?.closeAllTabs()
+                window?.close()
+            }
+        }
+        return true
+    }
+
+    func closeAllTabs() {
+        for tab in tabs { closeTab(id: tab.id) }
+    }
+
+    // MARK: 찾기 (⌘F)
+
+    func showFindBar() {
+        guard activeTab != nil else { return }
+        isFindBarVisible = true
+    }
+
+    func hideFindBar() {
+        isFindBarVisible = false
+        if let tab = activeTab { controllers[tab.focusedPaneID]?.terminalView.selectNone() }
+    }
+
+    /// 포커스된 칸에서 다음/이전 결과를 찾는다. 찾으면 선택하고 그 위치로 스크롤한다.
+    @discardableResult
+    func find(backwards: Bool = false) -> Bool {
+        guard let tab = activeTab, let view = controllers[tab.focusedPaneID]?.terminalView, !findQuery.isEmpty else {
+            return false
+        }
+        return backwards ? view.findPrevious(findQuery) : view.findNext(findQuery)
     }
 
     // MARK: 조회
@@ -140,7 +232,7 @@ final class TerminalSessionStore {
     }
 
     private func addController(for session: EmbeddedTerminalSession) {
-        let controller = TerminalSessionController(session: session)
+        let controller = TerminalSessionController(session: session, appearance: appearance)
         controller.onExit = { [weak self] id, exitCode in self?.handleExit(id: id, exitCode: exitCode) }
         controllers[session.id] = controller
     }
@@ -265,14 +357,10 @@ final class TerminalSessionController: Identifiable {
     nonisolated var id: UUID { session.id }
     var isRunning: Bool { status == .running }
 
-    init(session: EmbeddedTerminalSession) {
+    init(session: EmbeddedTerminalSession, appearance: TerminalAppearance = .standard) {
         self.session = session
         terminalView = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500))
-        terminalView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-        terminalView.nativeBackgroundColor = Self.background
-        terminalView.nativeForegroundColor = NSColor(calibratedWhite: 0.9, alpha: 1)
-        terminalView.caretColor = .controlAccentColor
-        terminalView.selectedTextBackgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.35)
+        apply(appearance)
 
         let delegate = ProcessDelegate { [weak self] rawStatus in
             self?.markExited(rawStatus: rawStatus)
@@ -311,8 +399,18 @@ final class TerminalSessionController: Identifiable {
         onExit?(id, exitCode)
     }
 
-    /// 터미널 주변 여백에도 같은 색을 쓴다.
-    static let background = NSColor(calibratedRed: 0.11, green: 0.12, blue: 0.14, alpha: 1)
+    /// 터미널 주변 여백에도 같은 배경색을 쓴다.
+    private(set) var backgroundColor = TerminalAppearance.standard.colors.background
+
+    func apply(_ appearance: TerminalAppearance) {
+        let colors = appearance.colors
+        terminalView.font = NSFont.monospacedSystemFont(ofSize: CGFloat(appearance.fontSize), weight: .regular)
+        terminalView.nativeBackgroundColor = colors.background
+        terminalView.nativeForegroundColor = colors.foreground
+        terminalView.caretColor = .controlAccentColor
+        terminalView.selectedTextBackgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.35)
+        backgroundColor = colors.background
+    }
 
     func terminate() {
         if isRunning { terminalView.terminate() }
@@ -345,5 +443,22 @@ private final class ProcessDelegate: NSObject, LocalProcessTerminalViewDelegate 
         // LocalProcess는 기본적으로 메인 큐에서 콜백한다.
         let onExit = self.onExit
         MainActor.assumeIsolated { onExit(exitCode) }
+    }
+}
+
+/// 내장 터미널 글꼴 크기와 색상
+struct TerminalAppearance: Equatable {
+    var fontSize: Double
+    var theme: TerminalTheme
+    /// `.system` 테마일 때 지금 시스템이 다크 모드인지
+    var systemIsDark: Bool
+
+    static let standard = TerminalAppearance(fontSize: AppPreferences.defaultTerminalFontSize, theme: .dark, systemIsDark: true)
+
+    var colors: (background: NSColor, foreground: NSColor) {
+        let dark = theme == .dark || (theme == .system && systemIsDark)
+        return dark
+            ? (NSColor(calibratedRed: 0.11, green: 0.12, blue: 0.14, alpha: 1), NSColor(calibratedWhite: 0.9, alpha: 1))
+            : (NSColor(calibratedRed: 0.98, green: 0.98, blue: 0.97, alpha: 1), NSColor(calibratedWhite: 0.13, alpha: 1))
     }
 }
