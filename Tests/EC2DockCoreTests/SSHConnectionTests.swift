@@ -102,6 +102,9 @@ struct SSHCommandBuilderTests {
         #expect(SSHCommandBuilder.checkKeyFile(key.path) == .tooOpen)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: key.path)
         #expect(SSHCommandBuilder.checkKeyFile(key.path) == .ok)
+        let symlink = directory.appendingPathComponent("link.pem")
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: key)
+        #expect(SSHCommandBuilder.checkKeyFile(symlink.path) == .ok)
         #expect(SSHCommandBuilder.checkKeyFile(directory.path) == .missing)
         #expect(SSHCommandBuilder.checkKeyFile(directory.appendingPathComponent("none").path) == .missing)
     }

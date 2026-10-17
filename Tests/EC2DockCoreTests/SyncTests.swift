@@ -100,6 +100,32 @@ struct ProfileSyncMergerTests {
         touched.updatedAt = edited
         #expect(p.hasSameContent(as: touched))
     }
+
+    @Test func localDeletionPropagatesToRemoteWhenRemoteUnchanged() {
+        let base = profile()
+        let result = ProfileSyncMerger.merge(local: [], remote: [base], base: [base])
+        #expect(result.local.isEmpty)
+        #expect(result.remote.isEmpty)
+        #expect(result.base.isEmpty)
+        #expect(result.conflicts.isEmpty)
+    }
+
+    @Test func remoteDeletionPropagatesToLocalWhenLocalUnchanged() {
+        let base = profile()
+        let result = ProfileSyncMerger.merge(local: [base], remote: [], base: [base])
+        #expect(result.local.isEmpty)
+        #expect(result.remote.isEmpty)
+        #expect(result.base.isEmpty)
+        #expect(result.conflicts.isEmpty)
+    }
+
+    @Test func deletionOnOneSideWithEditOnOtherKeepsEdit() {
+        let base = profile()
+        let modified = edited(base) { $0.displayName = "edited" }
+        let result = ProfileSyncMerger.merge(local: [], remote: [modified], base: [base])
+        #expect(result.local == [modified])
+        #expect(result.remote == [modified])
+    }
 }
 
 @MainActor
@@ -107,8 +133,8 @@ struct ProfileSyncMergerTests {
 struct AppStateSyncTests {
     let aws = MockAWSDiscoveryService(accounts: SampleData.awsProfiles, instances: [])
 
-    private func makeMac(sync: MockSyncService, profiles: [ServerProfile], enabled: Bool = true) -> AppState {
-        let store = InMemoryStore()
+    private func makeMac(sync: MockSyncService, profiles: [ServerProfile], enabled: Bool = true,
+                         store: any LocalStore = InMemoryStore()) -> AppState {
         try? store.save(profiles, to: .profiles)
         var preferences = AppPreferences()
         preferences.iCloudSyncEnabled = enabled
@@ -223,6 +249,127 @@ struct AppStateSyncTests {
         #expect(mac.profile(id: base.id)?.isFavorite == true)
         #expect(await sync.document?.profiles.first?.isFavorite == true)
         #expect(mac.syncConflicts.isEmpty)
+    }
+
+    @Test func offlineConflictSurvivesRepeatedSyncAndRelaunch() async throws {
+        let sync = MockSyncService()
+        let store = InMemoryStore()
+        let base = profile()
+        let mac = makeMac(sync: sync, profiles: [base], store: store)
+        await mac.syncNow()
+        let local = edited(base) { $0.sshUsername = "ubuntu" }
+        mac.updateConnectionSettings(profile: local, settings: mac.localSettings(for: base.id))
+        let remote = edited(base) { $0.sshUsername = "admin" }
+        await sync.setConflictVersions([SyncedProfilesDocument(profiles: [remote])])
+
+        await mac.syncNow()
+        await mac.syncNow()
+        #expect(mac.syncConflicts.first?.remote.sshUsername == "admin")
+        #expect(try await sync.load().conflictVersions.count == 1)
+
+        let relaunched = AppState.live(store: store, aws: aws, connectionService: MockConnectionService(), syncService: sync)
+        await relaunched.syncNow()
+        #expect(relaunched.syncConflicts.first?.remote.sshUsername == "admin")
+        #expect(relaunched.profile(id: base.id)?.sshUsername == "ubuntu")
+    }
+
+    @Test(arguments: [AppState.SyncResolution.keepLocal, .keepRemote])
+    func offlineConflictResolutionKeepsChosenSide(resolution: AppState.SyncResolution) async throws {
+        let sync = MockSyncService()
+        let base = profile()
+        let mac = makeMac(sync: sync, profiles: [base])
+        await mac.syncNow()
+        let local = edited(base) { $0.sshUsername = "ubuntu" }
+        mac.updateConnectionSettings(profile: local, settings: mac.localSettings(for: base.id))
+        let remote = edited(base) { $0.sshUsername = "admin" }
+        await sync.setConflictVersions([SyncedProfilesDocument(profiles: [remote])])
+        await mac.syncNow()
+
+        await mac.resolveConflict(id: base.id, keep: resolution)
+        await mac.syncNow()
+        let expected = resolution == .keepLocal ? "ubuntu" : "admin"
+        #expect(mac.profile(id: base.id)?.sshUsername == expected)
+        #expect(await sync.document?.profiles.first?.sshUsername == expected)
+        #expect(mac.syncConflicts.isEmpty)
+        #expect(try await sync.load().conflictVersions.isEmpty)
+    }
+
+    @Test func partialOfflineResolutionSurvivesRelaunch() async throws {
+        let sync = MockSyncService()
+        let store = InMemoryStore()
+        let first = profile()
+        let second = profile("i-0bbbbbbbbbbbbbbb2", name: "db")
+        let mac = makeMac(sync: sync, profiles: [first, second], store: store)
+        await mac.syncNow()
+        for base in [first, second] {
+            let local = edited(base) { $0.sshUsername = "ubuntu" }
+            mac.updateConnectionSettings(profile: local, settings: mac.localSettings(for: base.id))
+        }
+        let remoteFirst = edited(first) { $0.sshUsername = "admin" }
+        let remoteSecond = edited(second) { $0.sshUsername = "admin" }
+        await sync.setConflictVersions([SyncedProfilesDocument(profiles: [remoteFirst, remoteSecond])])
+        await mac.syncNow()
+        await mac.resolveConflict(id: first.id, keep: .keepRemote)
+        #expect(mac.syncConflicts.map(\.id) == [second.id])
+        #expect(try await sync.load().conflictVersions.count == 1)
+
+        let relaunched = AppState.live(store: store, aws: aws, connectionService: MockConnectionService(), syncService: sync)
+        await relaunched.syncNow()
+        #expect(relaunched.syncConflicts.map(\.id) == [second.id])
+        await relaunched.resolveConflict(id: second.id, keep: .keepLocal)
+        #expect(relaunched.syncConflicts.isEmpty)
+        #expect(try await sync.load().conflictVersions.isEmpty)
+        #expect(await sync.document?.profiles.first { $0.id == first.id }?.sshUsername == "admin")
+        #expect(await sync.document?.profiles.first { $0.id == second.id }?.sshUsername == "ubuntu")
+    }
+
+    @Test func saveOnlyResolvesExplicitlyMergedVersions() async throws {
+        let sync = MockSyncService()
+        let original = SyncedProfilesDocument(profiles: [profile()])
+        let later = SyncedProfilesDocument(profiles: [edited(profile()) { $0.groupName = "later" }])
+        await sync.setConflictVersions([original, later])
+        try await sync.save(original)
+        #expect(try await sync.load().conflictVersions == [original, later])
+        try await sync.save(original, resolvingConflictVersions: [original])
+        #expect(try await sync.load().conflictVersions == [later])
+    }
+
+    @Test func localSaveFailurePreservesOfflineVersionUntilRetry() async throws {
+        let sync = MockSyncService()
+        let store = SelectiveFailureStore()
+        let base = profile()
+        let mac = makeMac(sync: sync, profiles: [base], store: store)
+        await mac.syncNow()
+        let version = SyncedProfilesDocument(profiles: [edited(base) { $0.isFavorite = true }])
+        await sync.setConflictVersions([version])
+        store.failWrites(to: [.profiles])
+
+        await mac.syncNow()
+        guard case .failed = mac.syncStatus else { Issue.record("expected failure"); return }
+        #expect(try await sync.load().conflictVersions == [version])
+        #expect(await sync.document?.profiles.first?.isFavorite == false)
+
+        store.failWrites(to: [])
+        await mac.syncNow()
+        #expect(try await sync.load().conflictVersions.isEmpty)
+        #expect(try store.load([ServerProfile].self, from: .profiles)?.first?.isFavorite == true)
+    }
+
+    @Test func changedRemoteIsShownAgainBeforeResolvingStaleConflict() async throws {
+        let sync = MockSyncService()
+        let base = profile()
+        let mac = makeMac(sync: sync, profiles: [base])
+        await mac.syncNow()
+        let local = edited(base) { $0.sshUsername = "ubuntu" }
+        mac.updateConnectionSettings(profile: local, settings: mac.localSettings(for: base.id))
+        await sync.setDocument(SyncedProfilesDocument(profiles: [edited(base) { $0.sshUsername = "admin" }]))
+        await mac.syncNow()
+
+        let newer = edited(base) { $0.sshUsername = "newadmin" }
+        await sync.setDocument(SyncedProfilesDocument(profiles: [newer]))
+        await mac.resolveConflict(id: base.id, keep: .keepLocal)
+        #expect(mac.syncConflicts.first?.remote.sshUsername == "newadmin")
+        #expect(await sync.document?.profiles.first?.sshUsername == "newadmin")
     }
 }
 

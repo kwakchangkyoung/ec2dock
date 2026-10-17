@@ -31,6 +31,10 @@ struct AppStateTests {
         ServerProfile.makeID(accountID: SampleData.devAccountID, region: SampleData.seoul, instanceID: SampleData.devDBID)
     }
 
+    private var prodAPIID: String {
+        ServerProfile.makeID(accountID: SampleData.prodAccountID, region: SampleData.seoul, instanceID: SampleData.prodAPIID)
+    }
+
     @Test func showsCacheBeforeRefresh() {
         #expect(state.items(filter: .all, query: "").count == 7)
         #expect(state.instances[prodWebID]?.publicIPAddress == "203.0.113.10")
@@ -63,6 +67,22 @@ struct AppStateTests {
         state.toggleFavorite(id: devDBID)
         #expect(state.profile(id: devDBID)?.isFavorite == false)
         #expect(state.items(filter: .favorites, query: "").map(\.profile.displayName) == ["prod-web-01"])
+    }
+
+    @Test func deleteProfileRemovesProfileAndCleansUpBastionReferences() {
+        #expect(state.profile(id: prodAPIID) != nil)
+        let bastionID = state.profile(id: prodAPIID)?.bastionProfileID
+        #expect(bastionID == SampleData.prodBastionProfileID)
+
+        // Bastion 서버를 삭제하면 이를 참조하던 서버의 bastionProfileID가 nil로 정리되어야 한다
+        state.deleteProfile(id: bastionID!)
+        #expect(state.profile(id: bastionID!) == nil)
+        #expect(state.profile(id: prodAPIID)?.bastionProfileID == nil)
+
+        // 대상 서버도 삭제
+        state.deleteProfile(id: prodAPIID)
+        #expect(state.profile(id: prodAPIID) == nil)
+        #expect(state.instances[prodAPIID] == nil)
     }
 
     /// 설계 변경(7.4): Connect는 AWS를 호출하지 않고 캐시된 IP로 접속한다.

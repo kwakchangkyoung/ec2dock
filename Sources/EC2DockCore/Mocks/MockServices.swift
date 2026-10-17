@@ -77,7 +77,7 @@ public actor MockConnectionService: ConnectionService {
 
     public func setFailure(_ failure: ConnectionError?) { self.failure = failure }
 
-    public func connect(_ target: ConnectionTarget, in terminal: TerminalApp) async throws -> ConnectionOutcome {
+    public func connect(_ target: ConnectionTarget, in terminal: TerminalApp, preferNewTab: Bool) async throws -> ConnectionOutcome {
         if let failure { throw failure }
         requests.append(target)
         terminals.append(terminal)
@@ -95,7 +95,7 @@ public actor MockConnectionService: ConnectionService {
 
 /// 실행 요청을 기록만 한다. AppleScript를 실행하지 않는다.
 public actor MockTerminalLauncher: TerminalLauncher {
-    public private(set) var launched: [(command: TerminalCommand, app: TerminalApp)] = []
+    public private(set) var launched: [(command: TerminalCommand, app: TerminalApp, newTab: Bool)] = []
     private let installedApps: Set<TerminalApp>
 
     public init(installedApps: Set<TerminalApp> = Set(TerminalApp.allCases)) {
@@ -106,9 +106,9 @@ public actor MockTerminalLauncher: TerminalLauncher {
         installedApps.contains(app)
     }
 
-    public func launch(_ command: TerminalCommand, in app: TerminalApp) async throws {
+    public func launch(_ command: TerminalCommand, in app: TerminalApp, newTab: Bool) async throws {
         guard installedApps.contains(app) else { throw TerminalLaunchError.appNotInstalled(app) }
-        launched.append((command, app))
+        launched.append((command, app, newTab))
     }
 }
 
@@ -139,10 +139,11 @@ public actor MockSyncService: SyncService {
         return SyncSnapshot(document: document, conflictVersions: conflictVersions)
     }
 
-    public func save(_ document: SyncedProfilesDocument) async throws {
+    public func save(_ document: SyncedProfilesDocument,
+                     resolvingConflictVersions: [SyncedProfilesDocument]) async throws {
         if let failure { throw failure }
         self.document = document
-        conflictVersions = []
+        conflictVersions.removeAll { resolvingConflictVersions.contains($0) }
         saveCount += 1
     }
 }

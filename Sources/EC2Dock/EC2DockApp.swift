@@ -7,36 +7,99 @@ struct EC2DockApp: App {
     /// `--sample-data`로 실행하면 AWS를 호출하지 않고 샘플 데이터와 Mock을 사용한다.
     private static let usesSampleData = CommandLine.arguments.contains("--sample-data")
 
-    @ViewState private var state = usesSampleData ? AppState.sample() : AppState.live(store: JSONFileStore.applicationSupport)
-    @ViewState private var terminals = TerminalSessionStore()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @ViewState private var state: AppState
+    @ViewState private var terminals: TerminalSessionStore
+    @ViewState private var connections: ConnectionCoordinator
 
     init() {
         // `swift run`으로 실행할 때도 Dock 아이콘과 키보드 포커스를 갖도록 한다.
         NSApplication.shared.setActivationPolicy(.regular)
+        let state = Self.usesSampleData ? AppState.sample() : AppState.live(store: JSONFileStore.applicationSupport)
+        let terminals = TerminalSessionStore()
+        _state = ViewState(initialValue: state)
+        _terminals = ViewState(initialValue: terminals)
+        _connections = ViewState(initialValue: ConnectionCoordinator(state: state, terminals: terminals))
     }
 
     var body: some Scene {
-        WindowGroup(Self.usesSampleData ? "EC2Dock (Sample Data)" : "EC2Dock") {
+        WindowGroup(Self.usesSampleData ? "EC2Dock (샘플 데이터)" : "EC2Dock") {
             ContentView()
                 .environment(state)
                 .environment(terminals)
+                .environment(connections)
                 .frame(minWidth: 1000, minHeight: 600)
-                .onAppear { NSApp.activate(ignoringOtherApps: true) }
+                .background(MainWindowAccessor { terminals.mainWindow = $0 })
+                .modifier(TerminalAppearanceSync(state: state, terminals: terminals))
+                .onAppear {
+                    appDelegate.terminals = terminals
+                    NSApp.activate(ignoringOtherApps: true)
+                }
         }
         .commands {
-            TerminalCommands(terminals: terminals)
+            TerminalCommands(state: state, terminals: terminals)
         }
 
         Settings {
             PreferencesView()
                 .environment(state)
-                .frame(width: 520, height: 640)
+                .environment(terminals)
+                .frame(width: 560, height: 600)
         }
+    }
+}
+
+/// 연결 중인 세션이 있으면 앱 종료(⌘Q) 전에 확인한다.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    weak var terminals: TerminalSessionStore?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let count = terminals?.runningSessionCount, count > 0 else { return .terminateNow }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "연결 중인 터미널 \(count)개가 있습니다"
+        alert.informativeText = "EC2Dock을 종료하면 모든 ssh 연결이 끊깁니다."
+        alert.addButton(withTitle: "종료")
+        alert.addButton(withTitle: "취소")
+        return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
+    }
+}
+
+/// 메인 창(NSWindow)을 알려준다. ⌘W 가로채기를 메인 창으로 한정하는 데 쓴다.
+private struct MainWindowAccessor: NSViewRepresentable {
+    let onWindow: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { onWindow(view.window) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { onWindow(nsView.window) }
+    }
+}
+
+/// 설정의 글꼴 크기·테마와 시스템 다크 모드를 열린 터미널에 반영한다.
+private struct TerminalAppearanceSync: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    let state: AppState
+    let terminals: TerminalSessionStore
+
+    func body(content: Content) -> some View {
+        let appearance = TerminalAppearance(fontSize: state.preferences.terminalFontSize,
+                                            theme: state.preferences.terminalTheme,
+                                            systemIsDark: colorScheme == .dark)
+        content
+            .onChange(of: appearance, initial: true) { _, newValue in
+                terminals.appearance = newValue
+            }
     }
 }
 
 /// 메뉴 막대 "터미널" 메뉴와 단축키 (iTerm2 관례를 따름)
 private struct TerminalCommands: Commands {
+    let state: AppState
     let terminals: TerminalSessionStore
 
     var body: some Commands {
@@ -50,6 +113,35 @@ private struct TerminalCommands: Commands {
             Button("이 칸 닫기") { terminals.requestCloseFocusedPane() }
                 .keyboardShortcut("w", modifiers: [.command, .option])
                 .disabled(terminals.activeTab == nil)
+
+            Divider()
+
+            Button(terminals.isFocusMode ? "목록 다시 보기" : "터미널 넓게 보기") { terminals.isFocusMode.toggle() }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+                .disabled(terminals.activeTab == nil && !terminals.isFocusMode)
+            Button("터미널에서 찾기…") { terminals.showFindBar() }
+                .keyboardShortcut("f", modifiers: .command)
+                .disabled(terminals.activeTab == nil)
+            Button("다음 찾기") { terminals.find() }
+                .keyboardShortcut("g", modifiers: .command)
+                .disabled(terminals.activeTab == nil || terminals.findQuery.isEmpty)
+            Button("이전 찾기") { terminals.find(backwards: true) }
+                .keyboardShortcut("g", modifiers: [.command, .shift])
+                .disabled(terminals.activeTab == nil || terminals.findQuery.isEmpty)
+
+            Divider()
+
+            Button("글자 크게") { state.preferences.adjustTerminalFontSize(by: 1) }
+                .keyboardShortcut("+", modifiers: .command)
+                .disabled(state.preferences.terminalFontSize >= AppPreferences.terminalFontSizeRange.upperBound)
+            Button("글자 크게 (=)") { state.preferences.adjustTerminalFontSize(by: 1) }
+                .keyboardShortcut("=", modifiers: .command)
+                .disabled(state.preferences.terminalFontSize >= AppPreferences.terminalFontSizeRange.upperBound)
+            Button("글자 작게") { state.preferences.adjustTerminalFontSize(by: -1) }
+                .keyboardShortcut("-", modifiers: .command)
+                .disabled(state.preferences.terminalFontSize <= AppPreferences.terminalFontSizeRange.lowerBound)
+            Button("기본 글자 크기") { state.preferences.terminalFontSize = AppPreferences.defaultTerminalFontSize }
+                .keyboardShortcut("0", modifiers: [.command, .option])
 
             Divider()
 

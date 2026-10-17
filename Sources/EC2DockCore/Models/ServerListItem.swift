@@ -144,3 +144,113 @@ public enum ServerSearch {
             .sorted { $0.profile.displayName.localizedStandardCompare($1.profile.displayName) == .orderedAscending }
     }
 }
+
+// MARK: - 정렬과 묶기
+
+public enum ServerSortOrder: String, Codable, CaseIterable, Identifiable, Sendable {
+    case name
+    case state
+    case environment
+    case account
+    case region
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .name: "이름"
+        case .state: "상태 (실행 중 먼저)"
+        case .environment: "환경"
+        case .account: "계정"
+        case .region: "리전"
+        }
+    }
+}
+
+public enum ServerGrouping: String, Codable, CaseIterable, Identifiable, Sendable {
+    case none
+    case group
+    case environment
+    case account
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .none: "묶지 않음"
+        case .group: "그룹별"
+        case .environment: "환경별"
+        case .account: "계정별"
+        }
+    }
+}
+
+public struct ServerSection: Identifiable, Equatable, Sendable {
+    public let title: String
+    public let items: [ServerListItem]
+    public var id: String { title }
+}
+
+extension ServerSearch {
+    /// 정렬 기준이 같으면 이름순으로 정렬한다. `accountLabel`은 계정 ID를 화면 이름으로 바꾼다.
+    public static func sorted(_ items: [ServerListItem], by order: ServerSortOrder,
+                              accountLabel: (String) -> String = { $0 }) -> [ServerListItem] {
+        func byName(_ lhs: ServerListItem, _ rhs: ServerListItem) -> Bool {
+            lhs.profile.displayName.localizedStandardCompare(rhs.profile.displayName) == .orderedAscending
+        }
+        func compare(_ lhs: String, _ rhs: String) -> ComparisonResult { lhs.localizedStandardCompare(rhs) }
+        return items.sorted { lhs, rhs in
+            let result: ComparisonResult
+            switch order {
+            case .name:
+                return byName(lhs, rhs)
+            case .state:
+                let rank = { (item: ServerListItem) -> Int in
+                    switch item.instance?.state {
+                    case "running": 0
+                    case "pending", "stopping": 1
+                    case "stopped": 2
+                    case nil: 3
+                    default: 4
+                    }
+                }
+                let (l, r) = (rank(lhs), rank(rhs))
+                result = l == r ? .orderedSame : (l < r ? .orderedAscending : .orderedDescending)
+            case .environment:
+                result = compare(lhs.profile.environment.isEmpty ? "\u{FFFF}" : lhs.profile.environment,
+                                 rhs.profile.environment.isEmpty ? "\u{FFFF}" : rhs.profile.environment)
+            case .account:
+                result = compare(accountLabel(lhs.profile.accountID), accountLabel(rhs.profile.accountID))
+            case .region:
+                result = compare(lhs.profile.region, rhs.profile.region)
+            }
+            return result == .orderedSame ? byName(lhs, rhs) : result == .orderedAscending
+        }
+    }
+
+    /// 목록을 구역으로 나눈다. 값이 비어 있는 서버는 마지막 "미지정" 구역에 모은다.
+    public static func sections(_ items: [ServerListItem], by grouping: ServerGrouping,
+                                accountLabel: (String) -> String = { $0 }) -> [ServerSection] {
+        guard grouping != .none else { return [ServerSection(title: "", items: items)] }
+        let unassigned = "미지정"
+        var order: [String] = []
+        var buckets: [String: [ServerListItem]] = [:]
+        for item in items {
+            let key: String
+            switch grouping {
+            case .none: key = ""
+            case .group: key = item.profile.groupName.isEmpty ? unassigned : item.profile.groupName
+            case .environment: key = item.profile.environment.isEmpty ? unassigned : item.profile.environment
+            case .account: key = accountLabel(item.profile.accountID)
+            }
+            if buckets[key] == nil { order.append(key) }
+            buckets[key, default: []].append(item)
+        }
+        let titles = order.sorted { lhs, rhs in
+            if lhs == unassigned { return false }
+            if rhs == unassigned { return true }
+            return lhs.localizedStandardCompare(rhs) == .orderedAscending
+        }
+        return titles.map { ServerSection(title: $0, items: buckets[$0] ?? []) }
+    }
+}

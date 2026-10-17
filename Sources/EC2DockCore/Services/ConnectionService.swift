@@ -215,5 +215,12 @@ public enum ConnectionOutcome: Equatable, Sendable {
 
 /// Direct / Bastion / SSM 접속 실행 계층.
 public protocol ConnectionService: Sendable {
-    func connect(_ target: ConnectionTarget, in terminal: TerminalApp) async throws -> ConnectionOutcome
+    /// `preferNewTab`: 외부 터미널이 지원하면(iTerm2) 새 창 대신 새 탭으로 연다.
+    func connect(_ target: ConnectionTarget, in terminal: TerminalApp, preferNewTab: Bool) async throws -> ConnectionOutcome
+}
+
+extension ConnectionService {
+    public func connect(_ target: ConnectionTarget, in terminal: TerminalApp) async throws -> ConnectionOutcome {
+        try await connect(target, in: terminal, preferNewTab: false)
+    }
 }

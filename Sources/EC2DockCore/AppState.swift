@@ -20,6 +20,12 @@ public struct RefreshFailure: Identifiable, Equatable, Sendable {
     }
 }
 
+/// 새로고침 진행 상황 (계정 × 리전 조회 수)
+public struct RefreshProgress: Equatable, Sendable {
+    public let completed: Int
+    public let total: Int
+}
+
 public enum RefreshStatus: Equatable, Sendable {
     case idle
     case refreshing
@@ -43,14 +49,24 @@ public final class AppState {
     }
     public private(set) var availableAWSProfiles: [String] = []
     public private(set) var refreshStatus: RefreshStatus = .idle
+    /// 이 Mac에서 AWS CLI를 찾지 못했는지 (시작 체크리스트에 표시)
+    public private(set) var isAWSCLIMissing = false
+    /// 계정 확인이 끝나 리전 조회를 시작하면 채워진다.
+    public private(set) var refreshProgress: RefreshProgress?
     public private(set) var syncStatus: SyncStatus = .disabled
     public private(set) var syncAvailability: SyncAvailability?
     public private(set) var syncConflicts: [SyncConflict] = []
     /// 마지막으로 iCloud와 맞춘 프로필 (3-way 병합 기준)
     private var syncBase: [ServerProfile] = []
+    private var syncVersionResolutions: [ServerProfile] = []
+    private var syncConflictDocument: SyncedProfilesDocument?
     private var isSyncing = false
     /// 로컬 파일 저장/읽기 실패 메시지
-    public private(set) var persistenceError: String?
+    public var persistenceError: String? {
+        let messages = LocalStoreFile.allCases.compactMap { persistenceErrors[$0] }
+        return messages.isEmpty ? nil : messages.joined(separator: "\n")
+    }
+    private var persistenceErrors: [LocalStoreFile: String] = [:]
 
     /// 조회로 확인한 계정 ID → AWS CLI 프로필
     private var accountProfiles: [String: String] = [:]
@@ -90,12 +106,12 @@ public final class AppState {
         connectionService: any ConnectionService = TerminalConnectionService(),
         syncService: any SyncService = ICloudDriveSyncService()
     ) -> AppState {
-        var loadErrors: [String] = []
+        var loadErrors: [LocalStoreFile: String] = [:]
         func load<T: Decodable>(_ type: T.Type, _ file: LocalStoreFile) -> T? {
             do {
                 return try store.load(type, from: file)
             } catch {
-                loadErrors.append(file.rawValue)
+                loadErrors[file] = "\(file.rawValue) 읽기에 실패해 기본값으로 시작했습니다."
                 return nil
             }
         }
@@ -111,10 +127,9 @@ public final class AppState {
             store: store
         )
         state.syncBase = load([ServerProfile].self, .syncBase) ?? []
+        state.syncVersionResolutions = load([ServerProfile].self, .syncVersionResolutions) ?? []
         state.accountProfiles = load([String: String].self, .accountProfiles) ?? [:]
-        if !loadErrors.isEmpty {
-            state.persistenceError = "저장된 파일을 읽지 못해 기본값으로 시작했습니다: \(loadErrors.joined(separator: ", "))"
-        }
+        state.persistenceErrors = loadErrors
         return state
     }
 
@@ -207,6 +222,8 @@ public final class AppState {
     public func refresh() async {
         guard !isRefreshing else { return }
         refreshStatus = .refreshing
+        refreshProgress = nil
+        defer { refreshProgress = nil }
 
         do {
             availableAWSProfiles = try await aws.listProfiles()
@@ -219,6 +236,8 @@ public final class AppState {
         }
 
         var failures: [RefreshFailure] = []
+        var validProfiles: [(profile: String, accountID: String)] = []
+
         for awsProfile in preferences.profilesToScan {
             guard availableAWSProfiles.contains(awsProfile) else {
                 failures.append(RefreshFailure(source: awsProfile, error: AWSDiscoveryError.profileNotFound(awsProfile)))
@@ -235,17 +254,64 @@ public final class AppState {
                 continue
             }
             accountProfiles[identity.accountID] = awsProfile
+            validProfiles.append((profile: awsProfile, accountID: identity.accountID))
+        }
 
-            for region in preferences.regions {
-                do {
-                    let found = try await aws.describeInstances(profile: awsProfile, region: region)
-                    merge(found, accountID: identity.accountID, region: region, defaultAlias: awsProfile)
-                } catch is CancellationError {
+        let regions = preferences.regions
+        let awsService = aws
+
+        struct RegionFetchResult: Sendable {
+            let order: Int
+            let awsProfile: String
+            let accountID: String
+            let region: String
+            let instances: [EC2Instance]?
+            let error: (any Error)?
+        }
+
+        var tasks: [(order: Int, profile: String, accountID: String, region: String)] = []
+        var orderIndex = 0
+        for item in validProfiles {
+            for region in regions {
+                tasks.append((order: orderIndex, profile: item.profile, accountID: item.accountID, region: region))
+                orderIndex += 1
+            }
+        }
+
+        refreshProgress = RefreshProgress(completed: 0, total: tasks.count)
+        let results: [RegionFetchResult] = await withTaskGroup(of: RegionFetchResult.self) { group in
+            for task in tasks {
+                group.addTask {
+                    do {
+                        let found = try await awsService.describeInstances(profile: task.profile, region: task.region)
+                        return RegionFetchResult(order: task.order, awsProfile: task.profile, accountID: task.accountID, region: task.region, instances: found, error: nil)
+                    } catch {
+                        return RegionFetchResult(order: task.order, awsProfile: task.profile, accountID: task.accountID, region: task.region, instances: nil, error: error)
+                    }
+                }
+            }
+            var collected: [RegionFetchResult] = []
+            for await res in group {
+                collected.append(res)
+                refreshProgress = RefreshProgress(completed: collected.count, total: tasks.count)
+            }
+            return collected.sorted { $0.order < $1.order }
+        }
+
+        if Task.isCancelled {
+            refreshStatus = .idle
+            return
+        }
+
+        for result in results {
+            if let error = result.error {
+                if error is CancellationError {
                     refreshStatus = .idle
                     return
-                } catch {
-                    failures.append(RefreshFailure(source: "\(awsProfile) · \(region)", error: error))
                 }
+                failures.append(RefreshFailure(source: "\(result.awsProfile) · \(result.region)", error: error))
+            } else if let found = result.instances {
+                merge(found, accountID: result.accountID, region: result.region, defaultAlias: result.awsProfile)
             }
         }
 
@@ -292,8 +358,13 @@ public final class AppState {
 
     /// 로컬 AWS CLI 설정의 프로필 이름만 읽는다 (네트워크·자격 증명 사용 없음).
     public func reloadAWSProfiles() async {
-        if let profiles = try? await aws.listProfiles() {
-            availableAWSProfiles = profiles
+        do {
+            availableAWSProfiles = try await aws.listProfiles()
+            isAWSCLIMissing = false
+        } catch AWSDiscoveryError.cliNotFound {
+            isAWSCLIMissing = true
+        } catch {
+            // 다른 오류는 새로고침 때 원인과 함께 표시한다.
         }
     }
 
@@ -320,6 +391,24 @@ public final class AppState {
         profiles[index].isFavorite.toggle()
         profiles[index].updatedAt = now()
         persist(profiles, to: .profiles)
+    }
+
+    /// 서버 프로필을 삭제하고 관련 캐시와 설정을 정리한다.
+    public func deleteProfile(id: String) {
+        guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
+        profiles.remove(at: index)
+        instances.removeValue(forKey: id)
+        localSettings.removeValue(forKey: id)
+
+        // 다른 프로필의 Bastion 참조가 이 프로필을 가리키고 있다면 해제한다.
+        for idx in profiles.indices where profiles[idx].bastionProfileID == id {
+            profiles[idx].bastionProfileID = nil
+            profiles[idx].updatedAt = now()
+        }
+
+        persist(profiles, to: .profiles)
+        persist(Array(instances.values), to: .instanceCache)
+        persist(Array(localSettings.values), to: .localSettings)
     }
 
     public func localSettings(for id: String) -> LocalConnectionSettings {
@@ -384,7 +473,14 @@ public final class AppState {
             // 기준(base)은 바꾸지 않아야 아래 병합에서 iCloud로 올라간다.
             var working = profiles
             for version in snapshot.conflictVersions {
-                let result = ProfileSyncMerger.merge(local: working, remote: version.profiles, base: syncBase)
+                let resolvedProfiles = version.profiles.map { remote in
+                    if syncVersionResolutions.contains(where: { $0.hasSameContent(as: remote) }),
+                       let local = working.first(where: { $0.id == remote.id }) {
+                        return local
+                    }
+                    return remote
+                }
+                let result = ProfileSyncMerger.merge(local: working, remote: resolvedProfiles, base: syncBase)
                 working = result.local
                 result.conflicts.forEach { conflicts[$0.id] = $0 }
             }
@@ -393,20 +489,33 @@ public final class AppState {
             let result = ProfileSyncMerger.merge(local: working, remote: remoteProfiles, base: syncBase)
             result.conflicts.forEach { conflicts[$0.id] = $0 }
 
+            // 충돌 파일은 모든 선택이 끝날 때까지 원본과 비교 기준을 그대로 보존한다.
+            if !snapshot.conflictVersions.isEmpty && !conflicts.isEmpty {
+                syncConflictDocument = snapshot.document
+                syncConflicts = conflicts.values.sorted { $0.id < $1.id }
+                syncStatus = .conflicts(syncConflicts.count)
+                return
+            }
             if result.local != profiles {
                 profiles = result.local
-                persist(profiles, to: .profiles)
+            }
+            guard persist(profiles, to: .profiles) else {
+                throw SyncError.fileAccess("로컬 프로필을 저장하지 못했습니다.")
             }
             if snapshot.document == nil || result.remote != remoteProfiles || !snapshot.conflictVersions.isEmpty {
-                try await syncService.save(SyncedProfilesDocument(profiles: result.remote))
+                try await syncService.save(SyncedProfilesDocument(profiles: result.remote),
+                                           resolvingConflictVersions: snapshot.conflictVersions)
             }
             // iCloud에 저장이 끝난 뒤에만 기준을 옮긴다. 저장에 실패하면 다음 동기화에서 다시 올린다.
             syncBase = result.base
             persist(syncBase, to: .syncBase)
+            syncVersionResolutions = []
+            persist(syncVersionResolutions, to: .syncVersionResolutions)
 
             syncConflicts = conflicts.values.sorted {
                 $0.local.displayName.localizedStandardCompare($1.local.displayName) == .orderedAscending
             }
+            syncConflictDocument = snapshot.document
             syncStatus = syncConflicts.isEmpty ? .synced(now()) : .conflicts(syncConflicts.count)
         } catch is CancellationError {
             syncStatus = .disabled
@@ -417,18 +526,43 @@ public final class AppState {
 
     /// 충돌 해결: 고른 쪽을 남기고 다시 동기화한다.
     public func resolveConflict(id: String, keep resolution: SyncResolution) async {
-        guard let conflict = syncConflicts.first(where: { $0.id == id }) else { return }
-        // 기준을 iCloud 값으로 맞추면, 이 Mac 값을 고른 경우 "이 Mac에서만 바뀐 것"으로 올라가고
-        // iCloud 값을 고른 경우 양쪽이 같아진다.
-        syncBase.removeAll { $0.id == id }
-        syncBase.append(conflict.remote)
-        persist(syncBase, to: .syncBase)
+        guard !isSyncing, let conflict = syncConflicts.first(where: { $0.id == id }) else { return }
+        isSyncing = true
+        defer { isSyncing = false }
+        do {
+            let snapshot = try await syncService.load()
+            let previousRemote = syncConflictDocument?.profiles.first { $0.id == id }
+            let currentRemote = snapshot.document?.profiles.first { $0.id == id }
+            if previousRemote != currentRemote {
+                isSyncing = false
+                await syncNow()
+                return
+            }
+            if snapshot.conflictVersions.contains(where: { version in
+                version.profiles.contains { $0.hasSameContent(as: conflict.remote) }
+            }) {
+                syncVersionResolutions.append(conflict.remote)
+            }
+            // 충돌 버전이 아닌 현재 주 문서를 기준으로 선택한 값을 올린다.
+            syncBase.removeAll { $0.id == id }
+            if let remote = snapshot.document?.profiles.first(where: { $0.id == id }) {
+                syncBase.append(remote)
+            }
 
-        if resolution == .keepRemote, let index = profiles.firstIndex(where: { $0.id == id }) {
-            profiles[index] = conflict.remote
-            persist(profiles, to: .profiles)
+            if resolution == .keepRemote, let index = profiles.firstIndex(where: { $0.id == id }) {
+                profiles[index] = conflict.remote
+            }
+            guard persist(profiles, to: .profiles),
+                  persist(syncBase, to: .syncBase),
+                  persist(syncVersionResolutions, to: .syncVersionResolutions) else {
+                throw SyncError.fileAccess("충돌 해결 결과를 로컬에 저장하지 못했습니다.")
+            }
+            syncConflicts.removeAll { $0.id == id }
+        } catch {
+            syncStatus = .failed((error as? LocalizedError)?.errorDescription ?? "알 수 없는 오류")
+            return
         }
-        syncConflicts.removeAll { $0.id == id }
+        isSyncing = false
         await syncNow()
     }
 
@@ -507,7 +641,7 @@ public final class AppState {
             throw ConnectionError.productionConfirmationRequired
         }
         let app = terminal ?? TerminalApp(rawValue: target.settings.terminalIdentifier) ?? .iTerm2
-        return try await connectionService.connect(target, in: app)
+        return try await connectionService.connect(target, in: app, preferNewTab: preferences.iTermOpensNewTab)
     }
 
     /// 터미널 실행이 실패했을 때 직접 붙여 넣을 수 있는 명령 (FR-015).
@@ -515,13 +649,16 @@ public final class AppState {
         try SSHCommandBuilder().command(for: target).shellCommandLine
     }
 
-    private func persist<T: Encodable>(_ value: T, to file: LocalStoreFile) {
-        guard let store else { return }
+    @discardableResult
+    private func persist<T: Encodable>(_ value: T, to file: LocalStoreFile) -> Bool {
+        guard let store else { return true }
         do {
             try store.save(value, to: file)
-            persistenceError = nil
+            persistenceErrors[file] = nil
+            return true
         } catch {
-            persistenceError = "\(file.rawValue) 저장에 실패했습니다."
+            persistenceErrors[file] = "\(file.rawValue) 저장에 실패했습니다."
+            return false
         }
     }
 }

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public struct CommandResult: Equatable, Sendable {
@@ -55,38 +56,57 @@ public struct ProcessCommandRunner: CommandRunner {
         } catch {
             throw CommandRunnerError.launchFailed
         }
+        handle.didLaunch()
+        defer { handle.complete() }
 
-        // 파이프 버퍼가 가득 차 멈추지 않도록 종료를 기다리는 동안 계속 읽는다.
-        async let stdout = Self.readToEnd(stdoutPipe.fileHandleForReading)
-        async let stderr = Self.readToEnd(stderrPipe.fileHandleForReading)
-
-        let exitCode: Int32 = try await withTaskCancellationHandler {
-            try await withThrowingTaskGroup(of: Int32?.self) { group in
-                group.addTask { await handle.waitForExit() }
+        let result = try await withTaskCancellationHandler {
+            try await withThrowingTaskGroup(of: CommandResult.self) { group in
+                defer { group.cancelAll() }
+                group.addTask {
+                    async let stdout = Self.readToEnd(stdoutPipe.fileHandleForReading, handle: handle)
+                    async let stderr = Self.readToEnd(stderrPipe.fileHandleForReading, handle: handle)
+                    let exitCode = await handle.waitForExit()
+                    return await CommandResult(exitCode: exitCode, stdout: stdout, stderr: stderr)
+                }
                 group.addTask {
                     try await Task.sleep(for: timeout)
-                    return nil
-                }
-                let first = try await group.next() ?? nil
-                group.cancelAll()
-                guard let status = first else {
                     handle.terminate()
                     throw CommandRunnerError.timedOut
                 }
-                return status
+                // 자식이 파이프를 계속 열어 둔 경우도 전체 실행 시간에 포함한다.
+                return try await group.next()!
             }
         } onCancel: {
             handle.terminate()
         }
         try Task.checkCancellation()
 
-        return CommandResult(exitCode: exitCode, stdout: await stdout, stderr: await stderr)
+        return result
     }
 
-    private static func readToEnd(_ fileHandle: FileHandle) async -> Data {
+    private static func readToEnd(_ fileHandle: FileHandle, handle: ProcessHandle) async -> Data {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
-                continuation.resume(returning: (try? fileHandle.readToEnd()) ?? Data())
+                defer { try? fileHandle.close() }
+                var data = Data()
+                var buffer = [UInt8](repeating: 0, count: 65_536)
+                var descriptor = pollfd(fd: fileHandle.fileDescriptor, events: Int16(POLLIN), revents: 0)
+                // 무기한 read 대신 주기적으로 종료 요청을 확인한다.
+                while !handle.shouldStopReading {
+                    let ready = poll(&descriptor, 1, 50)
+                    if ready < 0 {
+                        if errno == EINTR { continue }
+                        break
+                    }
+                    if ready == 0 { continue }
+                    let count = buffer.withUnsafeMutableBytes {
+                        Darwin.read(descriptor.fd, $0.baseAddress, $0.count)
+                    }
+                    if count < 0 && errno == EINTR { continue }
+                    guard count > 0 else { break }
+                    data.append(contentsOf: buffer.prefix(count))
+                }
+                continuation.resume(returning: data)
             }
         }
     }
@@ -98,19 +118,43 @@ private final class ProcessHandle: @unchecked Sendable {
     private let lock = NSLock()
     private var exitStatus: Int32?
     private var continuation: CheckedContinuation<Int32, Never>?
+    private var processGroup: pid_t?
+    private var terminationRequested = false
+    private var completed = false
+    private var stopReading = false
 
     init(_ process: Process) {
         self.process = process
     }
 
+    func didLaunch() {
+        lock.lock()
+        defer { lock.unlock() }
+        let pid = process.processIdentifier
+        // Foundation이 만든 독립 그룹만 종료한다. 부모 앱의 그룹은 건드리지 않는다.
+        if getpgid(pid) == pid { processGroup = pid }
+    }
+
+    var shouldStopReading: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopReading
+    }
+
+    func complete() {
+        lock.lock()
+        completed = true
+        lock.unlock()
+    }
+
     func finish(_ status: Int32) {
         lock.lock()
+        exitStatus = status
         if let continuation {
             self.continuation = nil
             lock.unlock()
             continuation.resume(returning: status)
         } else {
-            exitStatus = status
             lock.unlock()
         }
     }
@@ -129,6 +173,30 @@ private final class ProcessHandle: @unchecked Sendable {
     }
 
     func terminate() {
-        if process.isRunning { process.terminate() }
+        lock.lock()
+        guard !completed, !terminationRequested else {
+            lock.unlock()
+            return
+        }
+        terminationRequested = true
+        signal(SIGTERM)
+        lock.unlock()
+
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .milliseconds(500)) {
+            self.lock.lock()
+            defer { self.lock.unlock() }
+            guard !self.completed else { return }
+            self.signal(SIGKILL)
+            self.stopReading = true
+        }
+    }
+
+    /// lock을 잡은 상태에서만 호출한다.
+    private func signal(_ value: Int32) {
+        if let processGroup {
+            kill(-processGroup, value)
+        } else if exitStatus == nil, process.isRunning {
+            kill(process.processIdentifier, value)
+        }
     }
 }

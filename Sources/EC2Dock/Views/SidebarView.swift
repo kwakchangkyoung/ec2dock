@@ -7,18 +7,18 @@ struct SidebarView: View {
 
     var body: some View {
         List(selection: $selection) {
-            Section("Servers") {
-                Label("All Servers", systemImage: "server.rack")
+            Section("서버") {
+                Label("전체 서버", systemImage: "server.rack")
                     .tag(SidebarItem.servers(.all))
-                Label("Favorites", systemImage: "star")
+                Label("즐겨찾기", systemImage: "star")
                     .tag(SidebarItem.servers(.favorites))
-                Label("Production", systemImage: "exclamationmark.shield")
+                Label("운영 (Production)", systemImage: "exclamationmark.shield")
                     .tag(SidebarItem.servers(.production))
-                Label("Development", systemImage: "hammer")
+                Label("개발 (Development)", systemImage: "hammer")
                     .tag(SidebarItem.servers(.development))
             }
 
-            Section("AWS Accounts") {
+            Section("AWS 계정") {
                 ForEach(state.accounts) { account in
                     Label {
                         HStack {
@@ -40,12 +40,18 @@ struct SidebarView: View {
                     .tag(SidebarItem.servers(.account(account.accountID)))
                 }
             }
-
-            Section {
-                Label("Settings", systemImage: "gearshape")
-                    .tag(SidebarItem.settings)
-            }
         }
         .listStyle(.sidebar)
+        // 설정은 macOS 표준 설정 창(⌘,)으로 연다.
+        .safeAreaInset(edge: .bottom) {
+            SettingsLink {
+                Label("설정", systemImage: "gearshape")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.borderless)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .help("설정 (⌘,)")
+        }
     }
 }

@@ -5,20 +5,13 @@ import SwiftUI
 struct ServerDetailView: View {
     @Environment(AppState.self) private var state
     @Environment(TerminalSessionStore.self) private var terminals
+    @Environment(ConnectionCoordinator.self) private var connections
     let item: ServerListItem
 
-    @ViewState private var isConnecting = false
-    @ViewState private var connectionError: ConnectionError?
-    @ViewState private var resultMessage: String?
-    @ViewState private var pendingProductionTarget: ConnectionTarget?
-    /// 이번 접속에서 고른 열기 방식 (nil이면 서버 설정의 터미널)
-    @ViewState private var chosenTerminal: TerminalApp?
-    /// 터미널 실행이 실패했을 때 대체 실행(FR-015)에 쓰는 마지막 시도
-    @ViewState private var failedAttempt: (target: ConnectionTarget, confirmed: Bool, terminal: TerminalApp)?
     @ViewState private var copiedCommand = false
-    @ViewState private var isEditingSettings = false
     @ViewState private var isRefreshingInstance = false
     @ViewState private var refreshError: ConnectionError?
+    @ViewState private var confirmsDeletion = false
 
     private var profile: ServerProfile { item.profile }
 
@@ -36,18 +29,28 @@ struct ServerDetailView: View {
         .toolbar {
             ToolbarItem {
                 Button {
-                    isEditingSettings = true
+                    connections.editingProfileID = profile.id
                 } label: {
                     Label("접속 설정 편집", systemImage: "slider.horizontal.3")
                 }
                 .help("접속 설정 편집 (접속 방식, Bastion, SSH 사용자·포트·키, 터미널)")
             }
+            ToolbarItem {
+                Button(role: .destructive) {
+                    confirmsDeletion = true
+                } label: {
+                    Label("서버 삭제", systemImage: "trash")
+                }
+                .help("이 서버 프로필을 삭제합니다")
+            }
         }
-        .sheet(isPresented: $isEditingSettings) {
-            ConnectionSettingsView(profile: profile, settings: state.localSettings(for: profile.id))
-        }
-        .productionConfirmation(target: $pendingProductionTarget, accountLabel: state.accountLabel(for:)) { target in
-            Task { await perform(target, productionConfirmed: true, terminal: chosenTerminal) }
+        .alert("서버 프로필을 삭제할까요?", isPresented: $confirmsDeletion) {
+            Button("삭제", role: .destructive) {
+                state.deleteProfile(id: profile.id)
+            }
+            Button("취소", role: .cancel) {}
+        } message: {
+            Text("'\(profile.displayName)' 프로필을 삭제합니다. 이 Mac의 캐시와 접속 설정이 제거되며, iCloud 동기화가 켜져 있으면 다른 Mac에서도 삭제됩니다.")
         }
     }
 
@@ -73,26 +76,28 @@ struct ServerDetailView: View {
     private var connectSection: some View {
         Section {
             let blockingReason = state.connectionBlockingReason(for: profile.id)
+            let isConnecting = connections.connectingIDs.contains(profile.id)
+            let feedback = connections.feedback[profile.id]
             HStack {
                 // 기본 클릭은 서버 설정의 터미널로 열고, 화살표 메뉴로 다른 방식을 고를 수 있다.
                 Menu {
                     ForEach(TerminalApp.allCases) { app in
                         Button("\(app.displayName)로 열기") {
-                            Task { await connect(using: app) }
+                            Task { await connections.connect(profileID: profile.id, terminal: app, source: .detail) }
                         }
                     }
                 } label: {
-                    Label("Connect", systemImage: "terminal")
+                    Label("접속", systemImage: "terminal")
                         .frame(minWidth: 100)
                 } primaryAction: {
-                    Task { await connect(using: nil) }
+                    Task { await connections.connect(profileID: profile.id, terminal: nil, source: .detail) }
                 }
                 .menuStyle(.button)
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .fixedSize()
                 .disabled(blockingReason != nil || isConnecting)
-                .help("클릭: \(defaultTerminal.displayName)로 열기 · 화살표: 열기 방식 선택")
+                .help("클릭: \(defaultTerminal.displayName)로 열기 · 화살표: 열기 방식 선택 · 목록에서 더블클릭/Return으로도 접속")
 
                 if isConnecting {
                     ProgressView().controlSize(.small)
@@ -100,7 +105,7 @@ struct ServerDetailView: View {
                 Spacer()
                 Text("\(profile.connectionType.displayName) · \(defaultTerminal.displayName)")
                     .foregroundStyle(.secondary)
-                Button("접속 설정…") { isEditingSettings = true }
+                Button("접속 설정…") { connections.editingProfileID = profile.id }
                     .help("접속 방식, Bastion, SSH 사용자·포트·키, 터미널을 설정합니다")
             }
 
@@ -116,16 +121,12 @@ struct ServerDetailView: View {
                 }
             }
 
-            if let error = connectionError ?? blockingReason {
-                ErrorGuidance(error: error)
-                if Self.isFixedInSettings(error) {
-                    Button("접속 설정 열기") { isEditingSettings = true }
-                }
-                if let failedAttempt {
-                    fallbackActions(for: failedAttempt)
-                }
-            } else if let resultMessage {
-                Label(resultMessage, systemImage: "checkmark.circle")
+            if case .failure(let error) = feedback?.kind {
+                errorBlock(error, attempt: feedback?.attempt)
+            } else if let blockingReason {
+                errorBlock(blockingReason, attempt: nil)
+            } else if case .success(let message) = feedback?.kind {
+                Label(message, systemImage: "checkmark.circle")
                     .foregroundStyle(.green)
             }
         } footer: {
@@ -133,33 +134,44 @@ struct ServerDetailView: View {
         }
     }
 
-    private func fallbackActions(for attempt: (target: ConnectionTarget, confirmed: Bool, terminal: TerminalApp)) -> some View {
+    @ViewBuilder
+    private func errorBlock(_ error: ConnectionError, attempt: ConnectionCoordinator.Attempt?) -> some View {
+        ErrorGuidance(error: error)
+        if Self.isFixedInSettings(error) {
+            Button("접속 설정 열기") { connections.editingProfileID = profile.id }
+        }
+        if let attempt {
+            fallbackActions(for: attempt)
+        }
+    }
+
+    private func fallbackActions(for attempt: ConnectionCoordinator.Attempt) -> some View {
         HStack {
             if attempt.terminal != .embedded {
                 Button("내장 터미널로 열기") {
-                    Task { await perform(attempt.target, productionConfirmed: attempt.confirmed, terminal: .embedded) }
+                    Task { await connections.perform(attempt.target, confirmed: attempt.confirmed, terminal: .embedded, source: .detail) }
                 }
             }
             if attempt.terminal != .terminal {
                 Button("Terminal로 열기") {
-                    Task { await perform(attempt.target, productionConfirmed: attempt.confirmed, terminal: .terminal) }
+                    Task { await connections.perform(attempt.target, confirmed: attempt.confirmed, terminal: .terminal, source: .detail) }
                 }
             }
             Button(copiedCommand ? "복사됨" : "명령 복사") {
-                copyCommand(for: attempt.target)
+                if connections.copyCommand(for: attempt) { flashCopied() }
             }
             .help("SSH 명령을 클립보드에 복사합니다. 터미널에 붙여 넣어 직접 실행하세요.")
         }
-        .disabled(isConnecting)
+        .disabled(connections.connectingIDs.contains(profile.id))
     }
 
     private var awsSection: some View {
         Section {
-            LabeledContent("인스턴스 ID", value: profile.instanceID)
+            copyableRow("인스턴스 ID", profile.instanceID)
             if let instance = item.instance {
                 LabeledContent("상태", value: instance.state)
-                LabeledContent("공인 IP", value: instance.publicIPAddress ?? "없음")
-                LabeledContent("사설 IP", value: instance.privateIPAddress ?? "없음")
+                copyableRow("공인 IP", instance.publicIPAddress)
+                copyableRow("사설 IP", instance.privateIPAddress)
                 LabeledContent("가용 영역", value: instance.availabilityZone ?? "-")
                 LabeledContent("인스턴스 유형", value: instance.instanceType ?? "-")
                 LabeledContent("마지막 조회", value: instance.lastFetchedAt.formatted(date: .abbreviated, time: .standard))
@@ -204,7 +216,7 @@ struct ServerDetailView: View {
     private var cacheFooter: String {
         let hostKeyNote = "IP가 바뀌었다면 호스트 키 검증(인스턴스 ID 기준)이 접속을 중단합니다. 그때는 \"다시 조회\"를 누르세요."
         guard let fetched = item.instance?.lastFetchedAt else { return hostKeyNote }
-        return "Connect는 \(fetched.formatted(.relative(presentation: .named)))에 조회한 IP로 바로 접속합니다. " + hostKeyNote
+        return "접속하면 \(fetched.formatted(.relative(presentation: .named)))에 조회한 IP로 바로 연결합니다. " + hostKeyNote
     }
 
     private var profileSection: some View {
@@ -263,31 +275,9 @@ struct ServerDetailView: View {
 
     // MARK: - Actions
 
-    private func connect(using terminal: TerminalApp?) async {
-        isConnecting = true
-        connectionError = nil
-        resultMessage = nil
-        failedAttempt = nil
-        copiedCommand = false
-        chosenTerminal = terminal
-        defer { isConnecting = false }
-
-        do {
-            let target = try state.prepareConnection(for: profile.id)
-            if state.requiresProductionConfirmation(for: target.profile) {
-                pendingProductionTarget = target
-            } else {
-                await perform(target, productionConfirmed: false, terminal: terminal)
-            }
-        } catch {
-            connectionError = error
-        }
-    }
-
     private func refreshInstance() async {
         isRefreshingInstance = true
         refreshError = nil
-        connectionError = nil
         defer { isRefreshingInstance = false }
         do {
             try await state.refreshInstance(id: profile.id)
@@ -296,46 +286,31 @@ struct ServerDetailView: View {
         }
     }
 
-    private func perform(_ target: ConnectionTarget, productionConfirmed: Bool, terminal: TerminalApp? = nil) async {
-        isConnecting = true
-        connectionError = nil
-        resultMessage = nil
-        defer { isConnecting = false }
-
-        let app = terminal ?? TerminalApp(rawValue: target.settings.terminalIdentifier) ?? .iTerm2
-        do {
-            switch try await state.connect(target, productionConfirmed: productionConfirmed, terminal: app) {
-            case .external(let message):
-                resultMessage = message
-            case .embedded(let session):
-                // 상세 영역에 새 터미널 탭을 열고 바로 보여준다.
-                terminals.open(session)
-            }
-            failedAttempt = nil
-        } catch let error as ConnectionError {
-            connectionError = error
-            switch error {
-            case .terminalUnavailable, .automationPermissionDenied, .launchFailed:
-                failedAttempt = (target, productionConfirmed, app)
-            default:
-                failedAttempt = nil
-            }
-        } catch {
-            connectionError = .launchFailed(error.localizedDescription)
-            failedAttempt = (target, productionConfirmed, app)
+    private func flashCopied() {
+        copiedCommand = true
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            copiedCommand = false
         }
     }
 
-    private func copyCommand(for target: ConnectionTarget) {
-        do {
-            let command = try state.commandLine(for: target)
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(command, forType: .string)
-            copiedCommand = true
-        } catch let error as ConnectionError {
-            connectionError = error
-        } catch {
-            connectionError = .launchFailed(error.localizedDescription)
+    /// 값 옆에 복사 버튼을 둔 행. 값이 없으면 "없음"을 표시한다.
+    private func copyableRow(_ title: String, _ value: String?) -> some View {
+        LabeledContent(title) {
+            HStack(spacing: 6) {
+                Text(value ?? "없음")
+                if let value {
+                    Button {
+                        ConnectionCoordinator.copy(value)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("\(title) 복사")
+                    .accessibilityLabel("\(title) 복사")
+                }
+            }
         }
     }
 }
