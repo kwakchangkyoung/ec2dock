@@ -216,7 +216,7 @@ enum AWSCLIErrorMapper {
             return .profileNotFound(profile)
         }
         if has("ExpiredToken", "token has expired", "session has expired", "Error loading SSO Token",
-               "RequestExpired", "refresh failed") {
+               "RequestExpired", "refresh failed", "expired or is otherwise invalid") {
             return .credentialsExpired(profile: profile)
         }
         if has("Unable to locate credentials", "InvalidClientTokenId", "partial credentials") {

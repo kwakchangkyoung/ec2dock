@@ -189,7 +189,7 @@ struct SyncDocumentTests {
     @Test func mockSyncRoundTrip() async throws {
         let sync = MockSyncService()
         let document = SyncedProfilesDocument(profiles: SampleData.profiles(now: fixedDate))
-        try await sync.save(document)
+        try await sync.save(document, replacing: nil)
         #expect(try await sync.load().document == document)
         #expect(await sync.saveCount == 1)
     }

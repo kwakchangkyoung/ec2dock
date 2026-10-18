@@ -43,6 +43,22 @@ private struct GeneralSettingsTab: View {
                 }
                 .pickerStyle(.segmented)
             }
+            if !state.deletedProfiles.isEmpty {
+                Section {
+                    ForEach(state.deletedProfiles.sorted { $0.deletedAt > $1.deletedAt }) { tombstone in
+                        LabeledContent {
+                            Button("복원") { state.restoreDeletedProfile(id: tombstone.id) }
+                        } label: {
+                            Text(tombstone.profile.displayName)
+                            Text("\(tombstone.profile.instanceID) · \(tombstone.deletedAt.formatted(date: .abbreviated, time: .shortened)) 삭제")
+                        }
+                    }
+                } header: {
+                    Text("삭제한 서버")
+                } footer: {
+                    Text("삭제한 서버는 새로고침해도 다시 추가되지 않습니다. 복원하면 목록에 돌아오고, 새로고침하면 IP와 상태가 다시 채워집니다.")
+                }
+            }
         }
         .formStyle(.grouped)
     }

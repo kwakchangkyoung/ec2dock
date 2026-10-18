@@ -50,7 +50,7 @@ struct ServerDetailView: View {
             }
             Button("취소", role: .cancel) {}
         } message: {
-            Text("'\(profile.displayName)' 프로필을 삭제합니다. 이 Mac의 캐시와 접속 설정이 제거되며, iCloud 동기화가 켜져 있으면 다른 Mac에서도 삭제됩니다.")
+            Text("'\(profile.displayName)' 프로필을 삭제합니다. 이 Mac의 캐시와 접속 설정이 제거되며, iCloud 동기화가 켜져 있으면 다른 Mac에서도 삭제됩니다. 새로고침해도 다시 추가되지 않으며, 설정 > 일반에서 복원할 수 있습니다.")
         }
     }
 

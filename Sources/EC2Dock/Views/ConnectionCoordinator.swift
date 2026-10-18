@@ -34,6 +34,8 @@ final class ConnectionCoordinator {
         let target: ConnectionTarget
         let terminal: TerminalApp?
         let source: Source
+        /// 접속 대신 SSH 명령을 복사한다 (복사한 명령으로 바로 운영 서버에 접속할 수 있으므로 같은 확인을 거친다).
+        var copiesCommand = false
     }
 
     /// 목록에서 시작한 동작의 오류 (상세 화면이 보이지 않을 수 있어 알림으로 보여준다)
@@ -83,6 +85,10 @@ final class ConnectionCoordinator {
     func confirmPending() {
         guard let pending = pendingConfirmation else { return }
         pendingConfirmation = nil
+        if pending.copiesCommand {
+            copy(pending.target, profileID: pending.target.profile.id, source: pending.source)
+            return
+        }
         Task { await perform(pending.target, confirmed: true, terminal: pending.terminal, source: pending.source) }
     }
 
@@ -134,20 +140,36 @@ final class ConnectionCoordinator {
     }
 
     /// SSH 명령을 클립보드에 복사한다. 접속할 수 없는 상태면 이유를 알린다.
-    @discardableResult
-    func copyCommand(profileID: String, source: Source) -> Bool {
+    /// Production 서버는 접속과 같은 확인을 거친 뒤 복사한다.
+    func copyCommand(profileID: String, source: Source) {
+        let target: ConnectionTarget
         do {
-            let target = try state.prepareConnection(for: profileID)
-            Self.copy(try state.commandLine(for: target))
-            return true
+            target = try state.prepareConnection(for: profileID)
         } catch {
-            if source == .list {
-                listAlert = ListAlert(profileID: profileID, title: "명령을 만들 수 없습니다",
-                                      message: TerminalErrorText.describe(error), attempt: nil)
-            } else {
-                feedback[profileID] = Feedback(kind: .failure((error as? ConnectionError) ?? .launchFailed("")), attempt: nil)
-            }
-            return false
+            reportCopyFailure(error, profileID: profileID, source: source)
+            return
+        }
+        if state.requiresProductionConfirmation(for: target.profile) {
+            pendingConfirmation = PendingConfirmation(target: target, terminal: nil, source: source, copiesCommand: true)
+        } else {
+            copy(target, profileID: profileID, source: source)
+        }
+    }
+
+    private func copy(_ target: ConnectionTarget, profileID: String, source: Source) {
+        do {
+            Self.copy(try state.commandLine(for: target))
+        } catch {
+            reportCopyFailure(error, profileID: profileID, source: source)
+        }
+    }
+
+    private func reportCopyFailure(_ error: any Error, profileID: String, source: Source) {
+        if source == .list {
+            listAlert = ListAlert(profileID: profileID, title: "명령을 만들 수 없습니다",
+                                  message: TerminalErrorText.describe(error), attempt: nil)
+        } else {
+            feedback[profileID] = Feedback(kind: .failure((error as? ConnectionError) ?? .launchFailed("")), attempt: nil)
         }
     }
 

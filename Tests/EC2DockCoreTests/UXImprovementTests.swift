@@ -130,3 +130,28 @@ struct ProgressAndNewTabTests {
         #expect(await launcher.launched.map(\.newTab) == [true, false])
     }
 }
+
+@Suite("Environment 판별")
+struct EnvironmentMatchingTests {
+    private func profile(environment: String) -> ServerProfile {
+        ServerProfile(accountID: "111111111111", accountAlias: "acme", region: "ap-northeast-2",
+                      instanceID: "i-0123456789abcdef0", displayName: "web", environment: environment,
+                      createdAt: .distantPast, updatedAt: .distantPast)
+    }
+
+    /// 운영 접속 확인을 건너뛰지 않도록 흔한 운영 표기를 모두 운영으로 본다.
+    @Test(arguments: ["production", "Production", "prod", "PRD", "Production-KR", "kr_prod", "live", "운영"])
+    func productionVariants(environment: String) {
+        #expect(profile(environment: environment).isProduction)
+    }
+
+    @Test(arguments: ["", "staging", "preprod", "development", "dev", "qa", "product-team"])
+    func nonProduction(environment: String) {
+        #expect(!profile(environment: environment).isProduction)
+    }
+
+    @Test(arguments: ["development", "Dev", "develop", "kr-dev", "개발"])
+    func developmentVariants(environment: String) {
+        #expect(profile(environment: environment).isDevelopment)
+    }
+}

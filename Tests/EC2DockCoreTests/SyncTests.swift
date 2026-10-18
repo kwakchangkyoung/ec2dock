@@ -101,30 +101,66 @@ struct ProfileSyncMergerTests {
         #expect(p.hasSameContent(as: touched))
     }
 
-    @Test func localDeletionPropagatesToRemoteWhenRemoteUnchanged() {
+    @Test func localDeletionPropagatesToRemote() {
         let base = profile()
-        let result = ProfileSyncMerger.merge(local: [], remote: [base], base: [base])
+        let tombstone = ProfileTombstone(profile: base, deletedAt: edited)
+        let result = ProfileSyncMerger.merge(local: [], remote: [base], base: [base], localDeleted: [tombstone])
         #expect(result.local.isEmpty)
         #expect(result.remote.isEmpty)
         #expect(result.base.isEmpty)
+        #expect(result.deleted == [tombstone])
         #expect(result.conflicts.isEmpty)
     }
 
-    @Test func remoteDeletionPropagatesToLocalWhenLocalUnchanged() {
+    @Test func remoteDeletionPropagatesToLocal() {
         let base = profile()
-        let result = ProfileSyncMerger.merge(local: [base], remote: [], base: [base])
+        let tombstone = ProfileTombstone(profile: base, deletedAt: edited)
+        let result = ProfileSyncMerger.merge(local: [base], remote: [], base: [base], remoteDeleted: [tombstone])
         #expect(result.local.isEmpty)
         #expect(result.remote.isEmpty)
-        #expect(result.base.isEmpty)
-        #expect(result.conflicts.isEmpty)
+        #expect(result.deleted == [tombstone])
     }
 
-    @Test func deletionOnOneSideWithEditOnOtherKeepsEdit() {
+    /// 목록에 없다는 것만으로는 삭제하지 않는다: 읽기 실패나 빈 iCloud 파일이 데이터를 지우면 안 된다.
+    @Test func missingWithoutTombstoneIsNotDeletion() {
         let base = profile()
+        let emptyLocal = ProfileSyncMerger.merge(local: [], remote: [base], base: [base])
+        #expect(emptyLocal.local == [base])
+        #expect(emptyLocal.remote == [base])
+
+        let emptyRemote = ProfileSyncMerger.merge(local: [base], remote: [], base: [base])
+        #expect(emptyRemote.local == [base])
+        #expect(emptyRemote.remote == [base])
+    }
+
+    /// 삭제한 뒤에 수정(또는 복원)한 값은 삭제 기록보다 우선한다.
+    @Test func editAfterDeletionWins() {
+        let base = profile()
+        let tombstone = ProfileTombstone(profile: base, deletedAt: created.addingTimeInterval(60))
         let modified = edited(base) { $0.displayName = "edited" }
-        let result = ProfileSyncMerger.merge(local: [], remote: [modified], base: [base])
+        let result = ProfileSyncMerger.merge(local: [], remote: [modified], base: [base], localDeleted: [tombstone])
         #expect(result.local == [modified])
         #expect(result.remote == [modified])
+        #expect(result.deleted.isEmpty)
+    }
+
+    @Test func deletionAfterEditWins() {
+        let base = profile()
+        let modified = edited(base) { $0.displayName = "edited" }
+        let tombstone = ProfileTombstone(profile: base, deletedAt: edited.addingTimeInterval(60))
+        let result = ProfileSyncMerger.merge(local: [], remote: [modified], base: [base], localDeleted: [tombstone])
+        #expect(result.local.isEmpty)
+        #expect(result.remote.isEmpty)
+    }
+
+    /// 기준보다 오래된 값(오래된 오프라인 파일 버전)으로 최신 수정을 되돌리지 않는다.
+    @Test func staleRemoteDoesNotRevertNewerBase() {
+        let original = profile()
+        let current = edited(original) { $0.groupName = "api" }
+        let result = ProfileSyncMerger.merge(local: [current], remote: [original], base: [current], remoteMayBeStale: true)
+        #expect(result.local == [current])
+        #expect(result.remote == [current])
+        #expect(result.conflicts.isEmpty)
     }
 }
 
@@ -328,9 +364,9 @@ struct AppStateSyncTests {
         let original = SyncedProfilesDocument(profiles: [profile()])
         let later = SyncedProfilesDocument(profiles: [edited(profile()) { $0.groupName = "later" }])
         await sync.setConflictVersions([original, later])
-        try await sync.save(original)
+        try await sync.save(original, replacing: nil)
         #expect(try await sync.load().conflictVersions == [original, later])
-        try await sync.save(original, resolvingConflictVersions: [original])
+        try await sync.save(original, replacing: original, resolvingConflictVersions: [original])
         #expect(try await sync.load().conflictVersions == [later])
     }
 
@@ -371,6 +407,89 @@ struct AppStateSyncTests {
         #expect(mac.syncConflicts.first?.remote.sshUsername == "newadmin")
         #expect(await sync.document?.profiles.first?.sshUsername == "newadmin")
     }
+
+    /// 로컬 프로필 파일을 읽지 못해 빈 목록으로 시작해도 iCloud의 서버를 지우지 않고 다시 받아온다.
+    @Test func unreadableLocalProfilesDoNotWipeICloud() async throws {
+        let sync = MockSyncService()
+        let store = InMemoryStore()
+        let mac = makeMac(sync: sync, profiles: [profile()], store: store)
+        await mac.syncNow()
+
+        let broken = SelectiveFailureStore()
+        try broken.save(AppPreferences.syncEnabledForTests, to: .preferences)
+        try broken.save([profile()], to: .syncBase)
+        broken.failReads(from: [.profiles])
+        let relaunched = AppState.live(store: broken, aws: aws, connectionService: MockConnectionService(), syncService: sync)
+        #expect(relaunched.profiles.isEmpty)
+        await relaunched.syncNow()
+
+        #expect(relaunched.profiles.map(\.id) == [profile().id])
+        #expect(await sync.document?.profiles.map(\.id) == [profile().id])
+    }
+
+    /// iCloud 파일이 없거나 비어 있어도(아직 내려받지 않음 등) 이 Mac의 서버를 지우지 않는다.
+    @Test func missingICloudFileDoesNotDeleteLocal() async throws {
+        let sync = MockSyncService()
+        let mac = makeMac(sync: sync, profiles: [profile()])
+        await mac.syncNow()
+
+        await sync.setDocument(nil)
+        await mac.syncNow()
+        #expect(mac.profiles.count == 1)
+        #expect(await sync.document?.profiles.count == 1)
+    }
+
+    /// 삭제는 다른 Mac에 전파되고 삭제 기록도 함께 받는다 (그 Mac의 새로고침이 되살리지 않도록).
+    @Test func deletionPropagatesWithTombstone() async throws {
+        let sync = MockSyncService()
+        let home = makeMac(sync: sync, profiles: [profile()])
+        await home.syncNow()
+        let office = makeMac(sync: sync, profiles: [])
+        await office.syncNow()
+        #expect(office.profiles.count == 1)
+
+        home.deleteProfile(id: profile().id)
+        await home.syncNow()
+        await office.syncNow()
+        #expect(office.profiles.isEmpty)
+        #expect(office.deletedProfiles.map(\.id) == [profile().id])
+    }
+
+    /// 삭제한 서버를 복원하면 다른 Mac에도 다시 나타난다.
+    @Test func restoredProfileSyncsBack() async throws {
+        let sync = MockSyncService()
+        let home = makeMac(sync: sync, profiles: [profile()])
+        await home.syncNow()
+        let office = makeMac(sync: sync, profiles: [])
+        await office.syncNow()
+
+        home.deleteProfile(id: profile().id)
+        await home.syncNow()
+        await office.syncNow()
+
+        office.restoreDeletedProfile(id: profile().id)
+        await office.syncNow()
+        await home.syncNow()
+        #expect(home.profile(id: profile().id) != nil)
+        #expect(home.deletedProfiles.isEmpty)
+        #expect(office.deletedProfiles.isEmpty)
+    }
+
+    /// 읽은 뒤 저장하기 전에 다른 Mac이 파일을 바꿨으면 다시 읽어 병합한다(다른 Mac의 변경을 덮어쓰지 않는다).
+    @Test func retriesWhenRemoteChangesDuringSync() async throws {
+        let first = profile()
+        let second = profile("i-0bbbbbbbbbbbbbbb2", name: "db")
+        let sync = RacingSyncService(document: SyncedProfilesDocument(profiles: [first]),
+                                     racedDocument: SyncedProfilesDocument(profiles: [first, second]))
+        let store = InMemoryStore()
+        try store.save(AppPreferences.syncEnabledForTests, to: .preferences)
+        try store.save([first, profile("i-0ccccccccccccccc3", name: "cache")], to: .profiles)
+        let mac = AppState.live(store: store, aws: aws, connectionService: MockConnectionService(), syncService: sync)
+
+        await mac.syncNow()
+        guard case .synced = mac.syncStatus else { Issue.record("expected synced, got \(mac.syncStatus)"); return }
+        #expect(Set(await sync.document.profiles.map(\.displayName)) == ["web", "db", "cache"])
+    }
 }
 
 @Suite("ICloudDriveSyncService (임시 폴더)")
@@ -387,14 +506,37 @@ struct ICloudDriveSyncServiceTests {
 
         #expect(try await service.load().document == nil)
         let document = SyncedProfilesDocument(profiles: [profile()])
-        try await service.save(document)
+        try await service.save(document, replacing: nil)
         #expect(try await service.load().document == document)
+    }
+
+    /// 읽은 뒤 다른 Mac이 파일을 바꿨으면 덮어쓰지 않는다.
+    @Test func saveRefusesWhenFileChangedSinceLoad() async throws {
+        let (service, root) = try makeService()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let first = SyncedProfilesDocument(profiles: [profile()])
+        try await service.save(first, replacing: nil)
+        let other = SyncedProfilesDocument(profiles: [profile(name: "other")])
+        try await service.save(other, replacing: first)
+
+        let mine = SyncedProfilesDocument(profiles: [profile(name: "mine")])
+        await #expect(throws: SyncError.remoteChanged) { try await service.save(mine, replacing: first) }
+        await #expect(throws: SyncError.remoteChanged) { try await service.save(mine, replacing: nil) }
+        #expect(try await service.load().document == other)
+    }
+
+    /// 삭제 기록이 없던 이전 버전의 파일도 읽는다.
+    @Test func decodesDocumentWithoutTombstones() throws {
+        let json = #"{"schemaVersion": 1, "profiles": []}"#
+        let document = try ICloudDriveSyncService.decode(Data(json.utf8))
+        #expect(document.deletedProfiles.isEmpty)
     }
 
     @Test func savedFileHasNoLocalOnlyData() async throws {
         let (service, root) = try makeService()
         defer { try? FileManager.default.removeItem(at: root) }
-        try await service.save(SyncedProfilesDocument(profiles: SampleData.profiles(now: created)))
+        try await service.save(SyncedProfilesDocument(profiles: SampleData.profiles(now: created)), replacing: nil)
 
         let json = try String(contentsOf: service.directory.appendingPathComponent(ICloudDriveSyncService.fileName), encoding: .utf8)
         for forbidden in ["sshKeyPath", "awsCLIProfileName", "publicIPAddress", "privateIPAddress", "203.0.113", "10.0."] {
@@ -423,5 +565,38 @@ struct ICloudDriveSyncServiceTests {
             return
         }
         await #expect(throws: SyncError.self) { try await service.load() }
+    }
+}
+
+private extension AppPreferences {
+    static var syncEnabledForTests: AppPreferences {
+        var preferences = AppPreferences()
+        preferences.iCloudSyncEnabled = true
+        return preferences
+    }
+}
+
+/// 첫 저장 직전에 다른 Mac이 파일을 바꾼 상황을 흉내 낸다.
+private actor RacingSyncService: SyncService {
+    private(set) var document: SyncedProfilesDocument
+    private var racedDocument: SyncedProfilesDocument?
+
+    init(document: SyncedProfilesDocument, racedDocument: SyncedProfilesDocument) {
+        self.document = document
+        self.racedDocument = racedDocument
+    }
+
+    func availability() async -> SyncAvailability { .available(location: "test") }
+
+    func load() async throws -> SyncSnapshot { SyncSnapshot(document: document) }
+
+    func save(_ document: SyncedProfilesDocument, replacing expected: SyncedProfilesDocument?,
+              resolvingConflictVersions: [SyncedProfilesDocument]) async throws {
+        if let raced = racedDocument {
+            self.document = raced
+            racedDocument = nil
+        }
+        guard self.document == expected else { throw SyncError.remoteChanged }
+        self.document = document
     }
 }

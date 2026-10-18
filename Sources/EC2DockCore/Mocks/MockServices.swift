@@ -7,6 +7,9 @@ public actor MockAWSDiscoveryService: AWSDiscoveryService {
     private var instances: [EC2Instance]
     private var failure: AWSDiscoveryError?
     private let latency: Duration
+    private var activeDescribeCalls = 0
+    /// 동시에 실행된 리전 조회의 최대 개수 (동시 조회 제한 확인용)
+    public private(set) var maxConcurrentDescribeCalls = 0
 
     public init(accounts: [String: String], instances: [EC2Instance], latency: Duration = .zero) {
         self.accounts = accounts
@@ -29,6 +32,9 @@ public actor MockAWSDiscoveryService: AWSDiscoveryService {
     }
 
     public func describeInstances(profile: String, region: String) async throws -> [EC2Instance] {
+        activeDescribeCalls += 1
+        maxConcurrentDescribeCalls = max(maxConcurrentDescribeCalls, activeDescribeCalls)
+        defer { activeDescribeCalls -= 1 }
         try await simulateCall()
         let accountID = try account(for: profile)
         let now = Date()
@@ -139,9 +145,10 @@ public actor MockSyncService: SyncService {
         return SyncSnapshot(document: document, conflictVersions: conflictVersions)
     }
 
-    public func save(_ document: SyncedProfilesDocument,
+    public func save(_ document: SyncedProfilesDocument, replacing expected: SyncedProfilesDocument?,
                      resolvingConflictVersions: [SyncedProfilesDocument]) async throws {
         if let failure { throw failure }
+        guard self.document == expected else { throw SyncError.remoteChanged }
         self.document = document
         conflictVersions.removeAll { resolvingConflictVersions.contains($0) }
         saveCount += 1

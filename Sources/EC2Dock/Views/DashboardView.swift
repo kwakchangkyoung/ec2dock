@@ -10,6 +10,8 @@ struct DashboardView: View {
     @Binding var stateFilter: InstanceStateFilter
     @Binding var selection: String?
     @ViewState private var pendingDeleteID: String?
+    /// 시작 안내 화면에서 연다. 로그인 중 서버가 생겨 안내 화면이 사라져도 시트가 닫히지 않도록 목록 화면이 띄운다.
+    @ViewState private var showsAddAccount = false
 
     var body: some View {
         let preferences = state.preferences
@@ -79,8 +81,9 @@ struct DashboardView: View {
             Button("취소", role: .cancel) {}
         } message: { id in
             let name = state.profile(id: id)?.displayName ?? "선택한 서버"
-            Text("'\(name)' 프로필을 삭제합니다. 이 Mac의 캐시와 접속 설정이 제거되며, iCloud 동기화가 켜져 있으면 다른 Mac에서도 삭제됩니다.")
+            Text("'\(name)' 프로필을 삭제합니다. 이 Mac의 캐시와 접속 설정이 제거되며, iCloud 동기화가 켜져 있으면 다른 Mac에서도 삭제됩니다. 새로고침해도 다시 추가되지 않으며, 설정 > 일반에서 복원할 수 있습니다.")
         }
+        .sheet(isPresented: $showsAddAccount) { AddAWSAccountView() }
     }
 
     private func rows(_ items: [ServerListItem], density: ServerListDensity) -> some View {
@@ -132,7 +135,7 @@ struct DashboardView: View {
     private var emptyState: some View {
         if state.profiles.isEmpty && searchText.isEmpty {
             // 서버가 하나도 없으면 시작 체크리스트를 보여준다.
-            GettingStartedView()
+            GettingStartedView(showsAddAccount: $showsAddAccount)
         } else if searchText.isEmpty && stateFilter != .all {
             ContentUnavailableView("\(stateFilter.displayName) 서버 없음", systemImage: "line.3.horizontal.decrease.circle")
         } else if searchText.isEmpty {
@@ -330,7 +333,7 @@ private struct RefreshFailureList: View {
 /// 서버가 하나도 없을 때: AWS CLI → 계정 → 조회 프로필 → 리전 → 새로고침 순서로 안내한다.
 private struct GettingStartedView: View {
     @Environment(AppState.self) private var state
-    @ViewState private var showsAddAccount = false
+    @Binding var showsAddAccount: Bool
 
     var body: some View {
         let cliReady = !state.isAWSCLIMissing
@@ -374,7 +377,6 @@ private struct GettingStartedView: View {
             .padding(24)
             .frame(maxWidth: 520, alignment: .leading)
         }
-        .sheet(isPresented: $showsAddAccount) { AddAWSAccountView() }
     }
 
     private func step<Actions: View>(_ number: Int, _ title: String, done: Bool, detail: String,

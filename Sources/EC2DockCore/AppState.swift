@@ -56,6 +56,8 @@ public final class AppState {
     public private(set) var syncStatus: SyncStatus = .disabled
     public private(set) var syncAvailability: SyncAvailability?
     public private(set) var syncConflicts: [SyncConflict] = []
+    /// 사용자가 삭제한 서버 (복원할 수 있다)
+    public private(set) var deletedProfiles: [ProfileTombstone] = []
     /// 마지막으로 iCloud와 맞춘 프로필 (3-way 병합 기준)
     private var syncBase: [ServerProfile] = []
     private var syncVersionResolutions: [ServerProfile] = []
@@ -129,6 +131,7 @@ public final class AppState {
         state.syncBase = load([ServerProfile].self, .syncBase) ?? []
         state.syncVersionResolutions = load([ServerProfile].self, .syncVersionResolutions) ?? []
         state.accountProfiles = load([String: String].self, .accountProfiles) ?? [:]
+        state.deletedProfiles = load([ProfileTombstone].self, .deletedProfiles) ?? []
         state.persistenceErrors = loadErrors
         return state
     }
@@ -152,6 +155,9 @@ public final class AppState {
     // MARK: - 조회
 
     public var isRefreshing: Bool { refreshStatus == .refreshing }
+
+    /// 새로고침 때 동시에 실행하는 리전 조회 수
+    static let maxConcurrentRegionFetches = 4
 
     /// 캐시에 있는 데이터 중 가장 최근 조회 시각
     public var lastFetchedAt: Date? { instances.values.map(\.lastFetchedAt).max() }
@@ -280,7 +286,10 @@ public final class AppState {
 
         refreshProgress = RefreshProgress(completed: 0, total: tasks.count)
         let results: [RegionFetchResult] = await withTaskGroup(of: RegionFetchResult.self) { group in
-            for task in tasks {
+            // 계정·리전이 많아도 AWS CLI 프로세스와 API 호출이 한꺼번에 몰리지 않게 동시 조회 수를 제한한다.
+            var pending = tasks[...]
+            func addNext() {
+                guard let task = pending.popFirst() else { return }
                 group.addTask {
                     do {
                         let found = try await awsService.describeInstances(profile: task.profile, region: task.region)
@@ -290,10 +299,12 @@ public final class AppState {
                     }
                 }
             }
+            for _ in 0..<Self.maxConcurrentRegionFetches { addNext() }
             var collected: [RegionFetchResult] = []
             for await res in group {
                 collected.append(res)
                 refreshProgress = RefreshProgress(completed: collected.count, total: tasks.count)
+                addNext()
             }
             return collected.sorted { $0.order < $1.order }
         }
@@ -369,8 +380,10 @@ public final class AppState {
     }
 
     /// 성공적으로 조회한 계정+리전의 캐시를 결과로 교체한다.
-    /// 사라진 인스턴스는 캐시에서만 지우고, 사용자 프로필은 유지한다.
+    /// 사라진 인스턴스는 캐시에서만 지우고, 사용자 프로필은 유지한다. 사용자가 삭제한 서버는 다시 추가하지 않는다.
     private func merge(_ found: [EC2Instance], accountID: String, region: String, defaultAlias: String) {
+        let deletedIDs = Set(deletedProfiles.map(\.id))
+        let found = found.filter { !deletedIDs.contains($0.id) }
         let foundIDs = Set(found.map(\.id))
         instances = instances.filter { id, instance in
             instance.accountID != accountID || instance.region != region || foundIDs.contains(id)
@@ -394,9 +407,13 @@ public final class AppState {
     }
 
     /// 서버 프로필을 삭제하고 관련 캐시와 설정을 정리한다.
+    /// 삭제 기록을 남겨 새로고침이나 다른 Mac과의 동기화로 되살아나지 않게 한다 (`restoreDeletedProfile`로 되돌린다).
     public func deleteProfile(id: String) {
         guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
-        profiles.remove(at: index)
+        let removed = profiles.remove(at: index)
+        deletedProfiles.removeAll { $0.id == id }
+        // 시계가 어긋나도 삭제가 지운 값보다 나중으로 기록되게 한다.
+        deletedProfiles.append(ProfileTombstone(profile: removed, deletedAt: max(now(), removed.updatedAt)))
         instances.removeValue(forKey: id)
         localSettings.removeValue(forKey: id)
 
@@ -406,9 +423,23 @@ public final class AppState {
             profiles[idx].updatedAt = now()
         }
 
+        persist(deletedProfiles, to: .deletedProfiles)
         persist(profiles, to: .profiles)
         persist(Array(instances.values), to: .instanceCache)
         persist(Array(localSettings.values), to: .localSettings)
+    }
+
+    /// 삭제한 서버를 목록에 되돌린다. 복원 시각이 삭제 시각보다 나중이므로 동기화에서도 복원이 우선한다.
+    /// 캐시(IP·상태)는 지웠으므로 새로고침하면 다시 채워진다.
+    public func restoreDeletedProfile(id: String) {
+        guard let index = deletedProfiles.firstIndex(where: { $0.id == id }) else { return }
+        let tombstone = deletedProfiles.remove(at: index)
+        var restored = tombstone.profile
+        // 저장 시각은 초 단위로 기록되므로 1초 여유를 두어 복원이 삭제보다 확실히 나중이 되게 한다.
+        restored.updatedAt = max(now(), tombstone.deletedAt).addingTimeInterval(1)
+        if profile(id: id) == nil { profiles.append(restored) }
+        persist(deletedProfiles, to: .deletedProfiles)
+        persist(profiles, to: .profiles)
     }
 
     public func localSettings(for id: String) -> LocalConnectionSettings {
@@ -466,62 +497,86 @@ public final class AppState {
         syncStatus = .syncing
 
         do {
-            let snapshot = try await syncService.load()
-            var conflicts: [String: SyncConflict] = [:]
-
-            // 다른 Mac이 오프라인에서 남긴 파일 버전의 변경을 먼저 이 Mac 목록에 반영한다.
-            // 기준(base)은 바꾸지 않아야 아래 병합에서 iCloud로 올라간다.
-            var working = profiles
-            for version in snapshot.conflictVersions {
-                let resolvedProfiles = version.profiles.map { remote in
-                    if syncVersionResolutions.contains(where: { $0.hasSameContent(as: remote) }),
-                       let local = working.first(where: { $0.id == remote.id }) {
-                        return local
-                    }
-                    return remote
+            // 읽은 뒤 저장하기 전에 다른 Mac이 파일을 바꿨으면 다시 읽어 병합한다.
+            var attempt = 1
+            while true {
+                do {
+                    try await performSync()
+                    break
+                } catch SyncError.remoteChanged where attempt < 3 {
+                    attempt += 1
                 }
-                let result = ProfileSyncMerger.merge(local: working, remote: resolvedProfiles, base: syncBase)
-                working = result.local
-                result.conflicts.forEach { conflicts[$0.id] = $0 }
             }
-
-            let remoteProfiles = snapshot.document?.profiles ?? []
-            let result = ProfileSyncMerger.merge(local: working, remote: remoteProfiles, base: syncBase)
-            result.conflicts.forEach { conflicts[$0.id] = $0 }
-
-            // 충돌 파일은 모든 선택이 끝날 때까지 원본과 비교 기준을 그대로 보존한다.
-            if !snapshot.conflictVersions.isEmpty && !conflicts.isEmpty {
-                syncConflictDocument = snapshot.document
-                syncConflicts = conflicts.values.sorted { $0.id < $1.id }
-                syncStatus = .conflicts(syncConflicts.count)
-                return
-            }
-            if result.local != profiles {
-                profiles = result.local
-            }
-            guard persist(profiles, to: .profiles) else {
-                throw SyncError.fileAccess("로컬 프로필을 저장하지 못했습니다.")
-            }
-            if snapshot.document == nil || result.remote != remoteProfiles || !snapshot.conflictVersions.isEmpty {
-                try await syncService.save(SyncedProfilesDocument(profiles: result.remote),
-                                           resolvingConflictVersions: snapshot.conflictVersions)
-            }
-            // iCloud에 저장이 끝난 뒤에만 기준을 옮긴다. 저장에 실패하면 다음 동기화에서 다시 올린다.
-            syncBase = result.base
-            persist(syncBase, to: .syncBase)
-            syncVersionResolutions = []
-            persist(syncVersionResolutions, to: .syncVersionResolutions)
-
-            syncConflicts = conflicts.values.sorted {
-                $0.local.displayName.localizedStandardCompare($1.local.displayName) == .orderedAscending
-            }
-            syncConflictDocument = snapshot.document
-            syncStatus = syncConflicts.isEmpty ? .synced(now()) : .conflicts(syncConflicts.count)
         } catch is CancellationError {
             syncStatus = .disabled
         } catch {
             syncStatus = .failed((error as? LocalizedError)?.errorDescription ?? "알 수 없는 오류")
         }
+    }
+
+    private func performSync() async throws {
+        let snapshot = try await syncService.load()
+        var conflicts: [String: SyncConflict] = [:]
+
+        // 다른 Mac이 오프라인에서 남긴 파일 버전의 변경을 먼저 이 Mac 목록에 반영한다.
+        // 기준(base)은 바꾸지 않아야 아래 병합에서 iCloud로 올라간다.
+        var working = profiles
+        var workingDeleted = deletedProfiles
+        for version in snapshot.conflictVersions {
+            let resolvedProfiles = version.profiles.map { remote in
+                if syncVersionResolutions.contains(where: { $0.hasSameContent(as: remote) }),
+                   let local = working.first(where: { $0.id == remote.id }) {
+                    return local
+                }
+                return remote
+            }
+            let result = ProfileSyncMerger.merge(local: working, remote: resolvedProfiles, base: syncBase,
+                                                 localDeleted: workingDeleted, remoteDeleted: version.deletedProfiles,
+                                                 remoteMayBeStale: true)
+            working = result.local
+            workingDeleted = result.deleted
+            result.conflicts.forEach { conflicts[$0.id] = $0 }
+        }
+
+        let remoteProfiles = snapshot.document?.profiles ?? []
+        let remoteDeleted = snapshot.document?.deletedProfiles ?? []
+        let result = ProfileSyncMerger.merge(local: working, remote: remoteProfiles, base: syncBase,
+                                             localDeleted: workingDeleted, remoteDeleted: remoteDeleted)
+        result.conflicts.forEach { conflicts[$0.id] = $0 }
+
+        // 충돌 파일은 모든 선택이 끝날 때까지 원본과 비교 기준을 그대로 보존한다.
+        if !snapshot.conflictVersions.isEmpty && !conflicts.isEmpty {
+            syncConflictDocument = snapshot.document
+            syncConflicts = conflicts.values.sorted { $0.id < $1.id }
+            syncStatus = .conflicts(syncConflicts.count)
+            return
+        }
+        if result.local != profiles {
+            profiles = result.local
+        }
+        if result.deleted != deletedProfiles {
+            deletedProfiles = result.deleted
+        }
+        guard persist(profiles, to: .profiles), persist(deletedProfiles, to: .deletedProfiles) else {
+            throw SyncError.fileAccess("로컬 프로필을 저장하지 못했습니다.")
+        }
+        if snapshot.document == nil || result.remote != remoteProfiles || result.deleted != remoteDeleted
+            || !snapshot.conflictVersions.isEmpty {
+            try await syncService.save(SyncedProfilesDocument(profiles: result.remote, deletedProfiles: result.deleted),
+                                       replacing: snapshot.document,
+                                       resolvingConflictVersions: snapshot.conflictVersions)
+        }
+        // iCloud에 저장이 끝난 뒤에만 기준을 옮긴다. 저장에 실패하면 다음 동기화에서 다시 올린다.
+        syncBase = result.base
+        persist(syncBase, to: .syncBase)
+        syncVersionResolutions = []
+        persist(syncVersionResolutions, to: .syncVersionResolutions)
+
+        syncConflicts = conflicts.values.sorted {
+            $0.local.displayName.localizedStandardCompare($1.local.displayName) == .orderedAscending
+        }
+        syncConflictDocument = snapshot.document
+        syncStatus = syncConflicts.isEmpty ? .synced(now()) : .conflicts(syncConflicts.count)
     }
 
     /// 충돌 해결: 고른 쪽을 남기고 다시 동기화한다.
