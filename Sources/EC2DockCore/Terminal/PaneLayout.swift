@@ -94,13 +94,17 @@ public struct TerminalTabLayout: Identifiable, Equatable, Sendable {
     }
 }
 
-/// 탭 이동. 순서는 ["서버 정보"(nil), 터미널 탭 1, 2, ...]이다.
+/// 탭 이동
 public enum TerminalTabNavigation {
-    /// 현재 탭에서 `offset`만큼 이동한 탭 (끝에서는 반대쪽으로 돈다)
+    /// 터미널 탭끼리 `offset`만큼 이동한다 (끝에서는 반대쪽으로 돈다).
+    /// "서버 정보"(nil)는 순환에 넣지 않는다 — 지나갈 때마다 화면 구성이 바뀌기 때문이다(⌘0으로 이동).
+    /// 서버 정보에서 시작하면 앞으로는 첫 탭, 뒤로는 마지막 탭으로 간다. 탭이 없으면 nil.
     public static func adjacent(to current: UUID?, offset: Int, tabs: [UUID]) -> UUID? {
-        let order: [UUID?] = [nil] + tabs
-        let index = order.firstIndex(of: current) ?? 0
-        return order[((index + offset) % order.count + order.count) % order.count]
+        guard !tabs.isEmpty else { return nil }
+        guard let current, let index = tabs.firstIndex(of: current) else {
+            return offset >= 0 ? tabs.first : tabs.last
+        }
+        return tabs[((index + offset) % tabs.count + tabs.count) % tabs.count]
     }
 
     /// ⌘1~⌘9: n번째 터미널 탭, ⌘0: 서버 정보. 없는 번호면 nil을 돌려주고 이동하지 않는다.

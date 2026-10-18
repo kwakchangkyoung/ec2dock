@@ -37,10 +37,11 @@ struct ContentView: View {
             terminals.activeTabID = nil
         }
         // 터미널 집중 모드: 터미널 탭을 보는 동안 사이드바와 목록을 접어 터미널을 넓게 쓴다.
-        .onChange(of: terminals.activeTabID) { _, newValue in
-            if state.preferences.autoFocusTerminal {
-                terminals.isFocusMode = newValue != nil
-            }
+        // 자동으로 접고 펴는 것은 "서버 정보 ↔ 터미널" 사이를 오갈 때만 한다.
+        // 터미널 탭끼리 바꿀 때는 사용자가 정한 지금 상태를 그대로 둔다.
+        .onChange(of: terminals.activeTabID) { oldValue, newValue in
+            guard state.preferences.autoFocusTerminal, (oldValue == nil) != (newValue == nil) else { return }
+            terminals.isFocusMode = newValue != nil
         }
         .onChange(of: terminals.isFocusMode) { _, focused in
             let target: NavigationSplitViewVisibility = focused ? .detailOnly : .all
@@ -50,6 +51,8 @@ struct ContentView: View {
         }
         .onChange(of: columnVisibility) { _, visibility in
             // 사용자가 직접 열고 닫은 경우도 집중 모드 상태에 반영한다.
+            // SwiftUI가 자동 값(.automatic)을 써넣는 경우는 사용자 조작이 아니므로 무시한다.
+            guard visibility != .automatic else { return }
             let focused = visibility == .detailOnly
             if terminals.isFocusMode != focused { terminals.isFocusMode = focused }
         }
@@ -113,3 +116,4 @@ struct ContentView: View {
         }
     }
 }
+

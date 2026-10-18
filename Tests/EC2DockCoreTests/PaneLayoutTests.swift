@@ -85,12 +85,21 @@ struct TerminalTabNavigationTests {
     let t1 = UUID(), t2 = UUID(), t3 = UUID()
 
     /// 순서: 서버 정보(nil) → 탭1 → 탭2 → 탭3 → 서버 정보
-    @Test func adjacentCyclesThroughServerInfo() {
+    /// ⌘←/⌘→는 터미널 탭끼리만 돈다. 서버 정보를 지나가지 않는다 (지나가면 집중 모드가 풀림).
+    @Test func adjacentCyclesOnlyThroughTerminalTabs() {
+        let tabs = [t1, t2, t3]
+        #expect(TerminalTabNavigation.adjacent(to: t1, offset: 1, tabs: tabs) == t2)
+        #expect(TerminalTabNavigation.adjacent(to: t3, offset: 1, tabs: tabs) == t1)
+        #expect(TerminalTabNavigation.adjacent(to: t1, offset: -1, tabs: tabs) == t3)
+        #expect(TerminalTabNavigation.adjacent(to: t2, offset: -1, tabs: tabs) == t1)
+    }
+
+    @Test func adjacentFromServerInfoEntersTerminalTabs() {
         let tabs = [t1, t2, t3]
         #expect(TerminalTabNavigation.adjacent(to: nil, offset: 1, tabs: tabs) == t1)
-        #expect(TerminalTabNavigation.adjacent(to: t3, offset: 1, tabs: tabs) == nil)
         #expect(TerminalTabNavigation.adjacent(to: nil, offset: -1, tabs: tabs) == t3)
-        #expect(TerminalTabNavigation.adjacent(to: t2, offset: -1, tabs: tabs) == t1)
+        #expect(TerminalTabNavigation.adjacent(to: nil, offset: 1, tabs: []) == nil)
+        #expect(TerminalTabNavigation.adjacent(to: UUID(), offset: 1, tabs: tabs) == t1)   // 닫힌 탭에서 시작
     }
 
     @Test func numberedTabs() {
