@@ -178,8 +178,9 @@ struct AddAWSAccountView: View {
                 ? try await state.loginSession(for: profile)
                 : try await state.addAccountSession(profile: profile, method: method)
             let controller = TerminalSessionController(session: session)
-            controller.onExit = { _, exitCode in
-                guard exitCode == 0 else { return }
+            // controller가 자기 자신을 붙잡지 않도록 약하게 참조한다.
+            controller.onExit = { [weak controller] _, exitCode in
+                guard exitCode == 0, let controller else { return }
                 Task { await finish(profile: profile, controller: controller) }
             }
             step = .login(controller)

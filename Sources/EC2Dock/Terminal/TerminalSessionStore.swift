@@ -123,7 +123,10 @@ final class TerminalSessionStore {
 
     func hideFindBar() {
         isFindBarVisible = false
-        if let tab = activeTab { controllers[tab.focusedPaneID]?.terminalView.selectNone() }
+        guard let tab = activeTab, let view = controllers[tab.focusedPaneID]?.terminalView else { return }
+        view.selectNone()
+        // 찾기를 마치면 다시 터미널에 입력할 수 있게 한다.
+        view.window?.makeFirstResponder(view)
     }
 
     /// 포커스된 칸에서 다음/이전 결과를 찾는다. 찾으면 선택하고 그 위치로 스크롤한다.
@@ -253,6 +256,15 @@ final class TerminalSessionStore {
 
     func selectAdjacentTab(offset: Int) {
         activeTabID = TerminalTabNavigation.adjacent(to: activeTabID, offset: offset, tabs: tabs.map(\.id))
+    }
+
+    /// ⌘←/⌘→: 글자 입력 칸(검색창 등)에 커서가 있으면 원래 동작대로 줄 처음/끝으로 옮기고, 아니면 터미널 탭을 옮긴다.
+    func selectAdjacentTabOrMoveCursor(offset: Int) {
+        if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
+            offset < 0 ? editor.moveToBeginningOfLine(nil) : editor.moveToEndOfLine(nil)
+            return
+        }
+        selectAdjacentTab(offset: offset)
     }
 
     /// ⌘1~⌘9: n번째 터미널 탭, ⌘0: 서버 정보

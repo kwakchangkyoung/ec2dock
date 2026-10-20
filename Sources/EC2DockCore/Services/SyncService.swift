@@ -5,10 +5,39 @@ import Foundation
 public struct SyncedProfilesDocument: Codable, Equatable, Sendable {
     public var schemaVersion: Int
     public var profiles: [ServerProfile]
+    /// 삭제 기록. 목록에 없다는 것만으로는 삭제로 보지 않는다(읽기 실패·오래된 파일 버전과 구분할 수 없다).
+    public var deletedProfiles: [ProfileTombstone]
 
-    public init(schemaVersion: Int = ServerProfile.currentSchemaVersion, profiles: [ServerProfile]) {
+    public init(schemaVersion: Int = ServerProfile.currentSchemaVersion, profiles: [ServerProfile],
+                deletedProfiles: [ProfileTombstone] = []) {
         self.schemaVersion = schemaVersion
         self.profiles = profiles
+        self.deletedProfiles = deletedProfiles
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, profiles, deletedProfiles
+    }
+
+    /// 삭제 기록이 없던 이전 버전의 파일도 읽는다.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        profiles = try container.decode([ServerProfile].self, forKey: .profiles)
+        deletedProfiles = try container.decodeIfPresent([ProfileTombstone].self, forKey: .deletedProfiles) ?? []
+    }
+}
+
+/// 사용자가 삭제한 서버 프로필. 새로고침이나 다른 Mac과의 동기화로 되살아나지 않게 하고, 복원할 수 있게 원래 값을 남긴다.
+public struct ProfileTombstone: Codable, Identifiable, Equatable, Sendable {
+    public var profile: ServerProfile
+    public var deletedAt: Date
+
+    public var id: String { profile.id }
+
+    public init(profile: ServerProfile, deletedAt: Date) {
+        self.profile = profile
+        self.deletedAt = deletedAt
     }
 }
 
@@ -37,6 +66,8 @@ public enum SyncError: Error, Equatable, Sendable {
     case newerSchema(Int)
     case invalidDocument
     case fileAccess(String)
+    /// 읽은 뒤 저장하기 전에 다른 Mac이 파일을 바꿨다.
+    case remoteChanged
 }
 
 extension SyncError: LocalizedError {
@@ -47,6 +78,7 @@ extension SyncError: LocalizedError {
         case .newerSchema(let version): "더 새로운 버전의 EC2Dock이 저장한 데이터입니다 (스키마 \(version))."
         case .invalidDocument: "iCloud의 동기화 파일을 해석할 수 없습니다."
         case .fileAccess(let message): "iCloud 파일에 접근하지 못했습니다: \(message)"
+        case .remoteChanged: "동기화하는 동안 다른 Mac이 iCloud 파일을 바꿨습니다."
         }
     }
 
@@ -57,6 +89,7 @@ extension SyncError: LocalizedError {
         case .newerSchema: "이 Mac의 EC2Dock을 최신 버전으로 업데이트하세요. 데이터를 덮어쓰지 않았습니다."
         case .invalidDocument: "파일을 덮어쓰지 않았습니다. iCloud Drive의 EC2Dock 폴더를 확인하세요."
         case .fileAccess: "iCloud Drive 연결 상태를 확인한 뒤 다시 시도하세요."
+        case .remoteChanged: "잠시 후 자동으로 다시 시도합니다."
         }
     }
 }
@@ -83,12 +116,14 @@ public enum SyncStatus: Equatable, Sendable {
 public protocol SyncService: Sendable {
     func availability() async -> SyncAvailability
     func load() async throws -> SyncSnapshot
-    /// 문서를 저장하고, 호출자가 병합을 완료한 충돌 버전만 해결 처리한다.
-    func save(_ document: SyncedProfilesDocument, resolvingConflictVersions: [SyncedProfilesDocument]) async throws
+    /// 지금 파일이 `expected`(마지막으로 읽은 문서, 없었으면 nil)와 같을 때만 저장한다. 다르면 `SyncError.remoteChanged`.
+    /// 저장한 뒤 호출자가 병합을 완료한 충돌 버전만 해결 처리한다.
+    func save(_ document: SyncedProfilesDocument, replacing expected: SyncedProfilesDocument?,
+              resolvingConflictVersions: [SyncedProfilesDocument]) async throws
 }
 
 extension SyncService {
-    public func save(_ document: SyncedProfilesDocument) async throws {
-        try await save(document, resolvingConflictVersions: [])
+    public func save(_ document: SyncedProfilesDocument, replacing expected: SyncedProfilesDocument?) async throws {
+        try await save(document, replacing: expected, resolvingConflictVersions: [])
     }
 }

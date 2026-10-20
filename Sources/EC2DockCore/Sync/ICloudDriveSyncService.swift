@@ -50,13 +50,14 @@ public struct ICloudDriveSyncService: SyncService {
 
             let data = try Self.coordinatedRead(url)
             let document = try Self.decode(data)
-            let versions = try (NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? [])
-                .map { version in try Self.decode(Data(contentsOf: version.url)) }
+            // 해석할 수 없는 버전 하나 때문에 동기화 전체를 멈추지 않는다. 그 버전은 해결 처리하지 않고 보존한다.
+            let versions = (NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? [])
+                .compactMap { version in try? Self.decode(Data(contentsOf: version.url)) }
             return SyncSnapshot(document: document, conflictVersions: versions)
         }
     }
 
-    public func save(_ document: SyncedProfilesDocument,
+    public func save(_ document: SyncedProfilesDocument, replacing expected: SyncedProfilesDocument?,
                      resolvingConflictVersions: [SyncedProfilesDocument]) async throws {
         if case .unavailable(let reason) = await availability() { throw SyncError.unavailable(reason) }
         let url = fileURL
@@ -68,7 +69,7 @@ public struct ICloudDriveSyncService: SyncService {
             } catch {
                 throw SyncError.fileAccess("폴더를 만들 수 없습니다.")
             }
-            try Self.coordinatedWrite(data, to: url)
+            try Self.coordinatedWrite(data, to: url, replacing: expected)
             // 읽은 뒤 새로 생겼거나 해석할 수 없는 버전은 보존한다.
             for version in NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? [] {
                 guard let data = try? Data(contentsOf: version.url),
@@ -95,15 +96,28 @@ public struct ICloudDriveSyncService: SyncService {
         }
     }
 
-    private static func coordinatedWrite(_ data: Data, to url: URL) throws {
+    /// 읽은 뒤 다른 Mac이 바꾼 내용을 덮어쓰지 않도록, 같은 조정 구간 안에서 지금 내용을 확인하고 쓴다.
+    private static func coordinatedWrite(_ data: Data, to url: URL, replacing expected: SyncedProfilesDocument?) throws {
         var coordinationError: NSError?
         var result: Result<Void, Error> = .failure(SyncError.fileAccess("쓰기 실패"))
         NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: .forReplacing, error: &coordinationError) { writeURL in
-            result = Result { try data.write(to: writeURL, options: .atomic) }
+            result = Result {
+                let unchanged: Bool
+                if FileManager.default.fileExists(atPath: writeURL.path) {
+                    let current = try? decode(Data(contentsOf: writeURL))
+                    unchanged = current != nil && current == expected
+                } else {
+                    unchanged = expected == nil
+                }
+                guard unchanged else { throw SyncError.remoteChanged }
+                try data.write(to: writeURL, options: .atomic)
+            }
         }
         if coordinationError != nil { throw SyncError.fileAccess("쓰기 조정 실패") }
         do {
             try result.get()
+        } catch SyncError.remoteChanged {
+            throw SyncError.remoteChanged
         } catch {
             throw SyncError.fileAccess("쓰기 실패")
         }

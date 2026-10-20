@@ -15,6 +15,8 @@ struct EC2DockApp: App {
     init() {
         // `swift run`으로 실행할 때도 Dock 아이콘과 키보드 포커스를 갖도록 한다.
         NSApplication.shared.setActivationPolicy(.regular)
+        // 창 탭(보기 > 탭 막대 보기의 +)으로 두 번째 창이 생기지 않게 한다.
+        NSWindow.allowsAutomaticWindowTabbing = false
         let state = Self.usesSampleData ? AppState.sample() : AppState.live(store: JSONFileStore.applicationSupport)
         let terminals = TerminalSessionStore()
         _state = ViewState(initialValue: state)
@@ -37,6 +39,8 @@ struct EC2DockApp: App {
                 }
         }
         .commands {
+            // 창은 하나만 쓴다: 터미널 화면과 ⌘W 처리가 메인 창 하나를 기준으로 동작한다.
+            CommandGroup(replacing: .newItem) {}
             TerminalCommands(state: state, terminals: terminals)
         }
 
@@ -155,10 +159,11 @@ private struct TerminalCommands: Commands {
             Divider()
 
             // 터미널 탭이 없을 때는 꺼 두어 검색창 등에서 ⌘←/⌘→(줄 처음/끝 이동)를 가로채지 않게 한다.
-            Button("다음 탭") { terminals.selectAdjacentTab(offset: 1) }
+            // 탭이 있어도 검색창 등 글자 입력 칸에서는 줄 처음/끝 이동으로 동작한다.
+            Button("다음 탭") { terminals.selectAdjacentTabOrMoveCursor(offset: 1) }
                 .keyboardShortcut(.rightArrow, modifiers: .command)
                 .disabled(terminals.tabs.isEmpty)
-            Button("이전 탭") { terminals.selectAdjacentTab(offset: -1) }
+            Button("이전 탭") { terminals.selectAdjacentTabOrMoveCursor(offset: -1) }
                 .keyboardShortcut(.leftArrow, modifiers: .command)
                 .disabled(terminals.tabs.isEmpty)
             Button("다음 탭 (대체 키)") { terminals.selectAdjacentTab(offset: 1) }

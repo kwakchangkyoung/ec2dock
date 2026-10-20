@@ -58,16 +58,27 @@ public struct SyncMergeResult: Equatable, Sendable {
     /// 다음 비교 기준 (충돌 항목은 이전 기준을 유지)
     public var base: [ServerProfile]
     public var conflicts: [SyncConflict]
+    /// 양쪽에 함께 둘 삭제 기록
+    public var deleted: [ProfileTombstone] = []
 }
 
 /// 마지막 동기화 시점(base)을 기준으로 한 3-way 병합 (설계서 9.3).
 /// 수정 시각만 비교해 조용히 덮어쓰지 않는다. 양쪽이 모두 바뀌면 충돌로 남긴다.
-/// base에 있던 프로필이 한쪽에서 삭제되었고 다른 쪽에서 변경되지 않은 경우 삭제를 전파한다.
+/// 한쪽 목록에 없다는 것만으로는 삭제로 보지 않는다. 파일 읽기 실패, 아직 내려받지 않은 파일,
+/// 오래된 오프라인 파일 버전도 "없음"으로 보이기 때문이다. 삭제는 삭제 기록(`ProfileTombstone`)으로만 전파하며,
+/// 삭제한 뒤에 수정(또는 복원)한 프로필은 삭제 기록보다 우선한다.
 public enum ProfileSyncMerger {
-    public static func merge(local: [ServerProfile], remote: [ServerProfile], base: [ServerProfile]) -> SyncMergeResult {
+    /// `remoteMayBeStale`: remote가 오래된 오프라인 파일 버전일 수 있을 때 true.
+    /// 이때는 기준보다 오래된 remote 값을 새 변경으로 보지 않는다(최신 수정을 되돌리지 않도록).
+    /// 주 문서에는 쓰지 않는다 — Mac마다 시계가 조금씩 달라 정상적인 수정을 오래된 값으로 오인할 수 있다.
+    public static func merge(local: [ServerProfile], remote: [ServerProfile], base: [ServerProfile],
+                             localDeleted: [ProfileTombstone] = [], remoteDeleted: [ProfileTombstone] = [],
+                             remoteMayBeStale: Bool = false) -> SyncMergeResult {
         let localByID = Dictionary(local.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let remoteByID = Dictionary(remote.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let baseByID = Dictionary(base.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var deletedByID = Dictionary((localDeleted + remoteDeleted).map { ($0.id, $0) },
+                                     uniquingKeysWith: { $0.deletedAt >= $1.deletedAt ? $0 : $1 })
 
         var mergedLocal = localByID
         var mergedRemote = remoteByID
@@ -76,29 +87,27 @@ public enum ProfileSyncMerger {
 
         for id in Set(localByID.keys).union(remoteByID.keys).union(baseByID.keys) {
             let baseProfile = baseByID[id]
+            let present = [localByID[id], remoteByID[id]].compactMap { $0 }
+            // 남아 있는 값보다 나중에 삭제되었으면 양쪽에서 지운다.
+            if let tombstone = deletedByID[id], let latest = present.map(\.updatedAt).max(), tombstone.deletedAt >= latest {
+                mergedLocal.removeValue(forKey: id)
+                mergedRemote.removeValue(forKey: id)
+                mergedBase.removeValue(forKey: id)
+                continue
+            }
+            if !present.isEmpty { deletedByID.removeValue(forKey: id) }
+
             switch (localByID[id], remoteByID[id]) {
             case (let l?, nil):
-                if let b = baseProfile, l.hasSameContent(as: b) {
-                    // remote에서 삭제되었고 local은 base와 같으므로 삭제 전파
-                    mergedLocal.removeValue(forKey: id)
-                    mergedBase.removeValue(forKey: id)
-                } else {
-                    // local에서 새로 추가되었거나, remote에서 삭제되었지만 local에서 수정된 경우
-                    mergedRemote[id] = l
-                    mergedBase[id] = l
-                }
+                // 이 Mac에만 있다: iCloud에 올린다.
+                mergedRemote[id] = l
+                mergedBase[id] = l
             case (nil, let r?):
-                if let b = baseProfile, r.hasSameContent(as: b) {
-                    // local에서 삭제되었고 remote는 base와 같으므로 삭제 전파
-                    mergedRemote.removeValue(forKey: id)
-                    mergedBase.removeValue(forKey: id)
-                } else {
-                    // remote에서 새로 추가되었거나, local에서 삭제되었지만 remote에서 수정된 경우
-                    mergedLocal[id] = r
-                    mergedBase[id] = r
-                }
+                // iCloud에만 있다: 이 Mac에 받는다.
+                mergedLocal[id] = r
+                mergedBase[id] = r
             case (let l?, let r?):
-                switch resolve(local: l, remote: r, base: baseProfile) {
+                switch resolve(local: l, remote: r, base: baseProfile, remoteMayBeStale: remoteMayBeStale) {
                 case .same:
                     mergedBase[id] = l
                 case .takeLocal:
@@ -119,18 +128,20 @@ public enum ProfileSyncMerger {
             local: ordered(mergedLocal, preferring: local, then: remote),
             remote: ordered(mergedRemote, preferring: remote, then: local),
             base: ordered(mergedBase, preferring: base, then: local + remote),
-            conflicts: conflicts.sorted { $0.local.displayName.localizedStandardCompare($1.local.displayName) == .orderedAscending }
+            conflicts: conflicts.sorted { $0.local.displayName.localizedStandardCompare($1.local.displayName) == .orderedAscending },
+            deleted: deletedByID.values.sorted { $0.id < $1.id }
         )
     }
 
     private enum Decision { case same, takeLocal, takeRemote, conflict }
 
-    private static func resolve(local l: ServerProfile, remote r: ServerProfile, base b: ServerProfile?) -> Decision {
+    private static func resolve(local l: ServerProfile, remote r: ServerProfile, base b: ServerProfile?,
+                                remoteMayBeStale: Bool) -> Decision {
         if l.hasSameContent(as: r) { return .same }
         if let b {
             let localChanged = !l.hasSameContent(as: b)
-            let remoteChanged = !r.hasSameContent(as: b)
-            if !localChanged { return .takeRemote }
+            let remoteChanged = !r.hasSameContent(as: b) && !(remoteMayBeStale && r.updatedAt < b.updatedAt)
+            if !localChanged && remoteChanged { return .takeRemote }
             if !remoteChanged { return .takeLocal }
             return .conflict
         }

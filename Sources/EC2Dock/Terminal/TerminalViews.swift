@@ -508,23 +508,35 @@ struct AWSLoginButton: View {
 
 /// 보관소가 소유한 터미널 뷰를 화면에 붙인다.
 /// 화면에서 빠질 때는 떼어내기만 하고 프로세스는 종료하지 않는다.
-/// 포커스된 칸이면 키보드 입력을 받도록 first responder로 만든다.
+/// 붙을 때와 포커스된 칸이 될 때만 키보드 입력을 받도록 first responder로 만든다.
+/// (화면이 갱신될 때마다 포커스를 가져오면 찾기 막대나 검색창에 입력하는 중에 포커스를 빼앗는다.)
 struct TerminalHostView: NSViewRepresentable {
     let terminalView: LocalProcessTerminalView
     var isFocused = true
 
+    final class Coordinator {
+        var wasFocused = false
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func makeNSView(context: Context) -> NSView {
         let container = NSView()
         attach(to: container)
+        context.coordinator.wasFocused = isFocused
         return container
     }
 
     func updateNSView(_ container: NSView, context: Context) {
-        if terminalView.superview !== container { attach(to: container) }
-        focusIfNeeded()
+        if terminalView.superview !== container {
+            attach(to: container)
+        } else if isFocused && !context.coordinator.wasFocused {
+            focusIfNeeded()
+        }
+        context.coordinator.wasFocused = isFocused
     }
 
-    static func dismantleNSView(_ container: NSView, coordinator: ()) {
+    static func dismantleNSView(_ container: NSView, coordinator: Coordinator) {
         container.subviews.forEach { $0.removeFromSuperview() }
     }
 
@@ -551,13 +563,14 @@ struct TerminalHostView: NSViewRepresentable {
 
 extension View {
     func productionConfirmation(target: Binding<ConnectionTarget?>, accountLabel: @escaping (String) -> String,
+                                title: String = "Production 서버에 접속합니다", confirmLabel: String = "접속",
                                 onConfirm: @escaping (ConnectionTarget) -> Void) -> some View {
         alert(
-            "Production 서버에 접속합니다",
+            title,
             isPresented: Binding(get: { target.wrappedValue != nil }, set: { if !$0 { target.wrappedValue = nil } }),
             presenting: target.wrappedValue
         ) { target in
-            Button("접속", role: .destructive) { onConfirm(target) }
+            Button(confirmLabel, role: .destructive) { onConfirm(target) }
             Button("취소", role: .cancel) {}
         } message: { target in
             Text("""

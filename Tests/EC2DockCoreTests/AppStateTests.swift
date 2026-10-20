@@ -85,6 +85,34 @@ struct AppStateTests {
         #expect(state.instances[prodAPIID] == nil)
     }
 
+    /// 계정·리전이 많아도 동시에 실행하는 리전 조회 수를 제한한다.
+    @Test func refreshLimitsConcurrentRegionFetches() async {
+        let slowAWS = MockAWSDiscoveryService(accounts: SampleData.awsProfiles, instances: [], latency: .milliseconds(20))
+        var preferences = SampleData.preferences
+        preferences.regions = ["ap-northeast-1", "ap-northeast-2", "ap-northeast-3", "us-east-1", "us-west-2", "eu-west-1"]
+        let state = AppState(profiles: [], cachedInstances: [], preferences: preferences, aws: slowAWS,
+                             connectionService: connection, syncService: MockSyncService(), now: { fixedDate })
+        await state.refresh()
+        let peak = await slowAWS.maxConcurrentDescribeCalls
+        #expect(peak > 1)
+        #expect(peak <= AppState.maxConcurrentRegionFetches)
+    }
+
+    /// 삭제한 서버는 새로고침으로 되살아나지 않고, 복원하면 다시 나타난다.
+    @Test func deletedProfileIsNotRediscoveredUntilRestored() async {
+        state.deleteProfile(id: prodWebID)
+        await state.refresh()
+        #expect(state.profile(id: prodWebID) == nil)
+        #expect(state.instances[prodWebID] == nil)
+        #expect(state.deletedProfiles.map(\.id) == [prodWebID])
+
+        state.restoreDeletedProfile(id: prodWebID)
+        #expect(state.profile(id: prodWebID) != nil)
+        #expect(state.deletedProfiles.isEmpty)
+        await state.refresh()
+        #expect(state.instances[prodWebID] != nil)
+    }
+
     /// 설계 변경(7.4): Connect는 AWS를 호출하지 않고 캐시된 IP로 접속한다.
     @Test func prepareConnectionUsesCachedIPWithoutCallingAWS() async throws {
         await aws.setFailure(.credentialsExpired(profile: "acme-prod"))   // 로그인 만료여도 접속 준비는 된다

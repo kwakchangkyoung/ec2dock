@@ -184,6 +184,7 @@ struct AWSCLIErrorMapperTests {
         #expect(map("The config profile (acme) could not be found") == .profileNotFound("acme"))
         #expect(map("Error when retrieving token from sso: Token has expired and refresh failed") == .credentialsExpired(profile: "acme"))
         #expect(map("An error occurred (ExpiredToken) when calling the GetCallerIdentity operation") == .credentialsExpired(profile: "acme"))
+        #expect(map("Error loading SSO Token: The SSO session associated with this profile has expired or is otherwise invalid. To refresh this SSO session run aws sso login with the corresponding profile.") == .credentialsExpired(profile: "acme"))
         #expect(map("An error occurred (UnauthorizedOperation) when calling the DescribeInstances operation: You are not authorized") == .accessDenied(action: "ec2:DescribeInstances"))
         #expect(map("An error occurred (InvalidClientTokenId) when calling the GetCallerIdentity operation") == .noCredentials(profile: "acme"))
         #expect(map("Could not connect to the endpoint URL: \"https://ec2.ap-northeast-2.amazonaws.com/\"") == .networkUnavailable)

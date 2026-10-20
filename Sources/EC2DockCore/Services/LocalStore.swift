@@ -12,6 +12,8 @@ public enum LocalStoreFile: String, CaseIterable, Sendable {
     case syncVersionResolutions = "SyncVersionResolutions.json"
     /// 계정 ID → AWS CLI 프로필 (이 Mac의 프로필 이름이므로 동기화하지 않음)
     case accountProfiles = "AccountProfiles.json"
+    /// 사용자가 삭제한 서버 프로필 (새로고침으로 되살리지 않고, 동기화로 다른 Mac에도 전파)
+    case deletedProfiles = "DeletedProfiles.json"
 }
 
 public protocol LocalStore: Sendable {

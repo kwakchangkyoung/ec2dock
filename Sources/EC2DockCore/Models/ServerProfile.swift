@@ -82,12 +82,18 @@ public struct ServerProfile: Codable, Identifiable, Equatable, Sendable {
         "\(accountID):\(region):\(instanceID)"
     }
 
+    /// Environment 태그를 단어로 나눠 판단한다: "prod", "PRD", "Production-KR", "live" 모두 운영으로 본다.
+    /// 운영 접속 확인을 건너뛰지 않도록 흔한 표기를 넓게 받는다.
     public var isProduction: Bool {
-        environment.caseInsensitiveCompare("production") == .orderedSame
+        !environmentWords.isDisjoint(with: ["production", "prod", "prd", "live", "운영"])
     }
 
     public var isDevelopment: Bool {
-        environment.caseInsensitiveCompare("development") == .orderedSame
+        !environmentWords.isDisjoint(with: ["development", "develop", "dev", "개발"])
+    }
+
+    private var environmentWords: Set<String> {
+        Set(environment.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init))
     }
 
     /// AWS에서 새로 발견한 인스턴스의 기본 프로필. Name/Environment 태그를 사용한다.

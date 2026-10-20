@@ -15,6 +15,8 @@ struct ContentView: View {
     @ViewState private var searchScope: SearchScope = .all
     @ViewState private var stateFilter: InstanceStateFilter = .all
     @ViewState private var columnVisibility: NavigationSplitViewVisibility = .all
+    /// 넓게 보기를 끌 때 돌아갈 화면 구성 (목록만 접어 둔 상태 등)
+    @ViewState private var visibilityBeforeFocus: NavigationSplitViewVisibility = .all
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -37,21 +39,29 @@ struct ContentView: View {
             terminals.activeTabID = nil
         }
         // 터미널 집중 모드: 터미널 탭을 보는 동안 사이드바와 목록을 접어 터미널을 넓게 쓴다.
-        .onChange(of: terminals.activeTabID) { _, newValue in
-            if state.preferences.autoFocusTerminal {
-                terminals.isFocusMode = newValue != nil
-            }
+        // 자동으로 접고 펴는 것은 "서버 정보 ↔ 터미널" 사이를 오갈 때만 한다.
+        // 터미널 탭끼리 바꿀 때는 사용자가 정한 지금 상태를 그대로 둔다.
+        .onChange(of: terminals.activeTabID) { oldValue, newValue in
+            guard state.preferences.autoFocusTerminal, (oldValue == nil) != (newValue == nil) else { return }
+            terminals.isFocusMode = newValue != nil
         }
         .onChange(of: terminals.isFocusMode) { _, focused in
-            let target: NavigationSplitViewVisibility = focused ? .detailOnly : .all
+            let target: NavigationSplitViewVisibility = focused ? .detailOnly : visibilityBeforeFocus
             if columnVisibility != target {
                 withAnimation(.easeInOut(duration: 0.2)) { columnVisibility = target }
             }
         }
         .onChange(of: columnVisibility) { _, visibility in
             // 사용자가 직접 열고 닫은 경우도 집중 모드 상태에 반영한다.
+            // SwiftUI가 자동 값(.automatic)을 써넣는 경우는 사용자 조작이 아니므로 무시한다.
+            guard visibility != .automatic else { return }
+            if visibility != .detailOnly { visibilityBeforeFocus = visibility }
             let focused = visibility == .detailOnly
             if terminals.isFocusMode != focused { terminals.isFocusMode = focused }
+        }
+        // 창을 닫았다 다시 열면 화면 구성이 처음 값으로 돌아오므로 넓게 보기 상태에 맞춘다.
+        .onAppear {
+            if terminals.isFocusMode { columnVisibility = .detailOnly }
         }
         // 시작 시에는 AWS를 호출하지 않고 캐시만 보여준다(재조회는 버튼으로).
         // 로컬 AWS CLI 프로필 목록만 읽어 둔다. 자동 새로고침은 설정에서 켠 경우에만 동작한다.
@@ -85,7 +95,10 @@ struct ContentView: View {
         .productionConfirmation(
             target: Binding(get: { connections.pendingConfirmation?.target },
                             set: { if $0 == nil { connections.pendingConfirmation = nil } }),
-            accountLabel: state.accountLabel(for:)
+            accountLabel: state.accountLabel(for:),
+            title: connections.pendingConfirmation?.copiesCommand == true
+                ? "Production 서버 접속 명령을 복사합니다" : "Production 서버에 접속합니다",
+            confirmLabel: connections.pendingConfirmation?.copiesCommand == true ? "복사" : "접속"
         ) { _ in
             connections.confirmPending()
         }
@@ -113,3 +126,4 @@ struct ContentView: View {
         }
     }
 }
+
