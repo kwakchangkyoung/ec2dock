@@ -99,6 +99,15 @@ struct ServerDetailView: View {
                 .disabled(blockingReason != nil || isConnecting)
                 .help("클릭: \(defaultTerminal.displayName)로 열기 · 화살표: 열기 방식 선택 · 목록에서 더블클릭/Return으로도 접속")
 
+                Button {
+                    Task { await connections.openFiles(profileID: profile.id, source: .detail) }
+                } label: {
+                    Label("파일", systemImage: "folder")
+                }
+                .controlSize(.large)
+                .disabled(blockingReason != nil)
+                .help("서버 파일을 탭으로 열어 올리고 내립니다 (SFTP)")
+
                 if isConnecting {
                     ProgressView().controlSize(.small)
                 }

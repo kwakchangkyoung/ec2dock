@@ -17,8 +17,13 @@ struct DetailArea: View {
                 Divider()
             }
             if let tab = terminals.activeTab {
-                TerminalTabView(tabID: tab.id)
-                    .id(tab.id)
+                if tab.kind == .files, let model = terminals.fileBrowser(id: tab.focusedPaneID) {
+                    FileBrowserView(model: model)
+                        .id(tab.id)
+                } else {
+                    TerminalTabView(tabID: tab.id)
+                        .id(tab.id)
+                }
             } else if let id = selectedServerID, let item = state.item(id: id) {
                 ServerDetailView(item: item)
                     .id(item.id)
@@ -33,6 +38,7 @@ struct DetailArea: View {
 
 private struct SessionTabBar: View {
     @Environment(TerminalSessionStore.self) private var terminals
+    @Environment(ConnectionCoordinator.self) private var connections
     @ViewState private var pendingCloseTab: TerminalTabLayout?
 
     var body: some View {
@@ -52,7 +58,9 @@ private struct SessionTabBar: View {
                         } label: {
                             SessionTabLabel(tab: tab, number: index + 1)
                         } onClose: {
-                            let running = tab.root.paneIDs.contains { terminals.controller(id: $0)?.isRunning == true }
+                            let running = tab.root.paneIDs.contains {
+                                terminals.controller(id: $0)?.isRunning == true || terminals.fileBrowser(id: $0)?.hasActiveTransfers == true
+                            }
                             if running {
                                 pendingCloseTab = tab
                             } else {
@@ -68,23 +76,35 @@ private struct SessionTabBar: View {
             if terminals.activeTab != nil {
                 Divider().frame(height: 18)
                 HStack(spacing: 2) {
-                    Button { terminals.showFindBar() } label: {
-                        Image(systemName: "magnifyingglass")
+                    if let tab = terminals.activeTerminalTab {
+                        // 포커스된 칸의 서버 파일을 파일 탭으로 연다.
+                        let profileID = terminals.controller(id: tab.focusedPaneID)?.session.profileID
+                        Button {
+                            if let profileID { Task { await connections.openFiles(profileID: profileID, source: .detail) } }
+                        } label: {
+                            Image(systemName: "folder")
+                        }
+                        .help("이 서버의 파일 열기 (SFTP)")
+                        .accessibilityLabel("이 서버의 파일 열기")
+                        .disabled(profileID == nil)
+                        Button { terminals.showFindBar() } label: {
+                            Image(systemName: "magnifyingglass")
+                        }
+                        .help("터미널에서 찾기 (⌘F)")
+                        .accessibilityLabel("터미널에서 찾기")
+                        Button { terminals.requestSplit(axis: .horizontal) } label: {
+                            Image(systemName: "rectangle.split.2x1")
+                        }
+                        .help("좌우로 분할 (⌘D)")
+                        .accessibilityLabel("좌우로 분할")
+                        .disabled(!terminals.canSplit)
+                        Button { terminals.requestSplit(axis: .vertical) } label: {
+                            Image(systemName: "rectangle.split.1x2")
+                        }
+                        .help("위아래로 분할 (⇧⌘D)")
+                        .accessibilityLabel("위아래로 분할")
+                        .disabled(!terminals.canSplit)
                     }
-                    .help("터미널에서 찾기 (⌘F)")
-                    .accessibilityLabel("터미널에서 찾기")
-                    Button { terminals.requestSplit(axis: .horizontal) } label: {
-                        Image(systemName: "rectangle.split.2x1")
-                    }
-                    .help("좌우로 분할 (⌘D)")
-                    .accessibilityLabel("좌우로 분할")
-                    .disabled(!terminals.canSplit)
-                    Button { terminals.requestSplit(axis: .vertical) } label: {
-                        Image(systemName: "rectangle.split.1x2")
-                    }
-                    .help("위아래로 분할 (⇧⌘D)")
-                    .accessibilityLabel("위아래로 분할")
-                    .disabled(!terminals.canSplit)
                     Button { terminals.isFocusMode.toggle() } label: {
                         Image(systemName: terminals.isFocusMode ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
                     }
@@ -104,7 +124,11 @@ private struct SessionTabBar: View {
             Button("닫기", role: .destructive) { terminals.closeTab(id: tab.id) }
             Button("취소", role: .cancel) {}
         } message: { tab in
-            Text("이 탭의 터미널 \(tab.root.paneIDs.count)개의 연결이 모두 종료됩니다.")
+            if tab.kind == .files {
+                Text("이 탭의 파일 전송 \(terminals.fileBrowser(id: tab.focusedPaneID)?.activeTransferCount ?? 0)개가 중단됩니다.")
+            } else {
+                Text("이 탭의 터미널 \(tab.root.paneIDs.count)개의 연결이 모두 종료됩니다.")
+            }
         }
     }
 }
@@ -115,6 +139,35 @@ private struct SessionTabLabel: View {
     let number: Int
 
     var body: some View {
+        if tab.kind == .files, let model = terminals.fileBrowser(id: tab.focusedPaneID) {
+            fileLabel(model)
+        } else {
+            terminalLabel
+        }
+    }
+
+    private func fileLabel(_ model: FileBrowserModel) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: "folder")
+                .foregroundStyle(.secondary)
+            Text(model.title)
+                .lineLimit(1)
+            if model.hasActiveTransfers {
+                ProgressView()
+                    .controlSize(.mini)
+                    .help("파일 전송 \(model.activeTransferCount)개 진행 중")
+            }
+            if model.isProduction {
+                Text("PROD")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.red)
+            }
+        }
+        .help(number <= 9 ? "파일 · \(model.destination) (⌘\(number))" : "파일 · \(model.destination)")
+    }
+
+    @ViewBuilder
+    private var terminalLabel: some View {
         let controller = terminals.controller(id: tab.focusedPaneID)
         let paneCount = tab.root.paneIDs.count
         let anyRunning = tab.root.paneIDs.contains { terminals.controller(id: $0)?.isRunning == true }

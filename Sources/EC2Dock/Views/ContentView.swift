@@ -96,9 +96,8 @@ struct ContentView: View {
             target: Binding(get: { connections.pendingConfirmation?.target },
                             set: { if $0 == nil { connections.pendingConfirmation = nil } }),
             accountLabel: state.accountLabel(for:),
-            title: connections.pendingConfirmation?.copiesCommand == true
-                ? "Production 서버 접속 명령을 복사합니다" : "Production 서버에 접속합니다",
-            confirmLabel: connections.pendingConfirmation?.copiesCommand == true ? "복사" : "접속"
+            title: confirmationText.title,
+            confirmLabel: confirmationText.button
         ) { _ in
             connections.confirmPending()
         }
@@ -123,6 +122,15 @@ struct ContentView: View {
             Button("닫기", role: .cancel) {}
         } message: { alert in
             Text(alert.message)
+        }
+    }
+
+    /// Production 확인 창의 제목과 확인 버튼 (접속·명령 복사·파일 열기)
+    private var confirmationText: (title: String, button: String) {
+        switch connections.pendingConfirmation?.action {
+        case .copyCommand: ("Production 서버 접속 명령을 복사합니다", "복사")
+        case .openFiles: ("Production 서버 파일을 엽니다", "열기")
+        case .connect, nil: ("Production 서버에 접속합니다", "접속")
         }
     }
 }

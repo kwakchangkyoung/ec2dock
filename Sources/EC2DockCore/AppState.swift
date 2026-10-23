@@ -76,6 +76,7 @@ public final class AppState {
     private let aws: any AWSDiscoveryService
     private let connectionService: any ConnectionService
     private let syncService: any SyncService
+    private let sftpClientFactory: @Sendable (ConnectionTarget) -> any SFTPClient
     private let store: (any LocalStore)?
     private let now: @Sendable () -> Date
 
@@ -87,6 +88,7 @@ public final class AppState {
         aws: any AWSDiscoveryService,
         connectionService: any ConnectionService,
         syncService: any SyncService,
+        sftpClientFactory: @escaping @Sendable (ConnectionTarget) -> any SFTPClient = { OpenSSHSFTPClient(target: $0) },
         store: (any LocalStore)? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
@@ -97,6 +99,7 @@ public final class AppState {
         self.aws = aws
         self.connectionService = connectionService
         self.syncService = syncService
+        self.sftpClientFactory = sftpClientFactory
         self.store = store
         self.now = now
     }
@@ -148,7 +151,8 @@ public final class AppState {
                 latency: .milliseconds(600)
             ),
             connectionService: MockConnectionService(),
-            syncService: MockSyncService()
+            syncService: MockSyncService(),
+            sftpClientFactory: { _ in MockSFTPClient(latency: .milliseconds(300)) }
         )
     }
 
@@ -697,6 +701,15 @@ public final class AppState {
         }
         let app = terminal ?? TerminalApp(rawValue: target.settings.terminalIdentifier) ?? .iTerm2
         return try await connectionService.connect(target, in: app, preferNewTab: preferences.iTermOpensNewTab)
+    }
+
+    /// 서버 파일(SFTP) 접근. 접속과 같은 대상·검증을 쓰고, Production 확인도 접속과 똑같이 이 계층에서 강제한다.
+    public func fileClient(for target: ConnectionTarget, productionConfirmed: Bool) throws(ConnectionError) -> any SFTPClient {
+        if requiresProductionConfirmation(for: target.profile) && !productionConfirmed {
+            throw .productionConfirmationRequired
+        }
+        if target.profile.connectionType == .ssm { throw .unsupportedConnectionType(.ssm) }
+        return sftpClientFactory(target)
     }
 
     /// 터미널 실행이 실패했을 때 직접 붙여 넣을 수 있는 명령 (FR-015).

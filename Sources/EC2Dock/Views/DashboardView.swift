@@ -109,6 +109,10 @@ struct DashboardView: View {
             }
         }
         .disabled(blocked)
+        Button("파일 열기 (SFTP)") {
+            Task { await connections.openFiles(profileID: id, source: .list) }
+        }
+        .disabled(blocked)
         Divider()
         Button("접속 설정…") { connections.editingProfileID = id }
         Button("다시 조회") { Task { await connections.refreshInstance(profileID: id) } }
