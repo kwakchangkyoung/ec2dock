@@ -14,6 +14,8 @@ final class FileBrowserModel: Identifiable {
         }
 
         enum Status: Equatable {
+            /// 자리가 나기를 기다리는 중 (동시 전송 수 제한)
+            case queued
             case running
             case finished
             case failed(String)
@@ -29,7 +31,10 @@ final class FileBrowserModel: Identifiable {
         /// 알 수 있을 때만 (폴더 올리기·내려받기는 전체 크기를 미리 모를 수 있다)
         let totalBytes: Int64?
         var transferredBytes: Int64?
-        var status: Status = .running
+        var status: Status = .queued
+
+        /// 대기 중이거나 전송 중
+        var isActive: Bool { status == .queued || status == .running }
 
         var fraction: Double? {
             guard let totalBytes, totalBytes > 0, let transferredBytes else { return nil }
@@ -63,6 +68,10 @@ final class FileBrowserModel: Identifiable {
         ?? FileManager.default.homeDirectoryForCurrentUser
 
     @ObservationIgnored private var transferTasks: [UUID: Task<Void, Never>] = [:]
+    /// 서버 연결 하나를 나눠 쓰므로(ssh 연결 재사용) 동시에 보내는 수를 제한하고 나머지는 차례를 기다린다.
+    /// 올리기는 진행률 확인에도 세션을 하나 더 쓴다. sshd 기본 MaxSessions(10) 안에 들도록 3개로 둔다.
+    static let maxConcurrentTransfers = 3
+    @ObservationIgnored private let limiter = ConcurrencyLimiter(limit: FileBrowserModel.maxConcurrentTransfers)
     @ObservationIgnored private var navigationID = 0
 
     init(profileID: String, title: String, destination: String, isProduction: Bool, client: any SFTPClient) {
@@ -83,7 +92,9 @@ final class FileBrowserModel: Identifiable {
             }
     }
 
-    var activeTransferCount: Int { transfers.filter { $0.status == .running }.count }
+    /// 대기 중인 전송도 센다 (탭 닫기·앱 종료 확인에 사용)
+    var activeTransferCount: Int { transfers.filter(\.isActive).count }
+    var queuedTransferCount: Int { transfers.filter { $0.status == .queued }.count }
     var hasActiveTransfers: Bool { activeTransferCount > 0 }
 
     /// 호스트 키 문제는 터미널로 접속해 사용자가 직접 확인해야 풀린다.
@@ -199,7 +210,11 @@ final class FileBrowserModel: Identifiable {
         for entry in selected {
             let isDirectory = entry.kind == .directory
             let remotePath = RemotePath.join(path, entry.name)
-            let localURL = LocalFileNaming.uniqueURL(for: entry.name, in: folder)
+            // 아직 디스크에 생기지 않은, 대기 중·전송 중인 내려받기 이름도 피한다.
+            let reserved = Set(transfers.filter { $0.direction == .download && $0.isActive }.map(\.localURL.standardizedFileURL))
+            let localURL = LocalFileNaming.uniqueURL(for: entry.name, in: folder) { url in
+                reserved.contains(url.standardizedFileURL) || FileManager.default.fileExists(atPath: url.path)
+            }
             let transfer = Transfer(direction: .download, name: entry.name, isDirectory: isDirectory, localURL: localURL,
                                     remotePath: remotePath, totalBytes: isDirectory ? nil : entry.size)
             let client = client
@@ -238,7 +253,7 @@ final class FileBrowserModel: Identifiable {
     }
 
     func clearFinishedTransfers() {
-        transfers.removeAll { $0.status != .running }
+        transfers.removeAll { !$0.isActive }
     }
 
     func revealInFinder(_ transfer: Transfer) {
@@ -249,24 +264,38 @@ final class FileBrowserModel: Identifiable {
                        progress: @escaping @Sendable () async -> Int64?) {
         transfers.append(transfer)
         let id = transfer.id
+        let limiter = limiter
+        let markRunning: @Sendable () async -> Void = { [weak self] in await self?.markRunning(id) }
+        let report: @Sendable (Int64) async -> Void = { [weak self] bytes in await self?.setProgress(id, bytes) }
         transferTasks[id] = Task { [weak self] in
-            let poller = Task { [weak self] in
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: .milliseconds(800))
-                    guard !Task.isCancelled else { return }
-                    if let bytes = await progress() { self?.update(id) { $0.transferredBytes = bytes } }
-                }
-            }
             let status: Transfer.Status
             do {
-                try await work()
+                // 차례가 오면 전송 중으로 바꾸고, 그때부터 진행률을 확인한다.
+                try await limiter.run(onStart: markRunning) {
+                    let poller = Task {
+                        while !Task.isCancelled {
+                            try? await Task.sleep(for: .milliseconds(800))
+                            guard !Task.isCancelled else { return }
+                            if let bytes = await progress() { await report(bytes) }
+                        }
+                    }
+                    defer { poller.cancel() }
+                    try await work()
+                }
                 status = .finished
             } catch {
                 status = Task.isCancelled || error is CancellationError ? .cancelled : .failed(TerminalErrorText.describe(error))
             }
-            poller.cancel()
             self?.finish(id, status: status)
         }
+    }
+
+    private func markRunning(_ id: UUID) {
+        update(id) { $0.status = .running }
+    }
+
+    private func setProgress(_ id: UUID, _ bytes: Int64) {
+        update(id) { $0.transferredBytes = bytes }
     }
 
     private func finish(_ id: UUID, status: Transfer.Status) {
@@ -278,8 +307,8 @@ final class FileBrowserModel: Identifiable {
         }
         switch (transfer.direction, status) {
         case (.download, .cancelled), (.download, .failed):
-            // 새로 만든 이름으로 받던 것이므로 남은 조각만 지운다.
-            try? FileManager.default.removeItem(at: transfer.localURL)
+            // 새로 만든 이름으로 받던 것이므로 남은 조각만 지운다. 시작도 안 한(대기 중) 전송은 지울 것이 없다.
+            if transfer.status == .running { try? FileManager.default.removeItem(at: transfer.localURL) }
         case (.upload, .finished):
             // 지금 보고 있는 폴더에 올렸으면 목록을 새로 고친다.
             if let path, RemotePath.parent(of: transfer.remotePath) == path {
