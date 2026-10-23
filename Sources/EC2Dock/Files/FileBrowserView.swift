@@ -452,10 +452,10 @@ private struct TransferListView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(model.hasActiveTransfers ? "전송 중 \(model.activeTransferCount)개" : "전송 완료")
+                Text(headline)
                     .font(.caption.weight(.semibold))
                 Spacer()
-                if model.transfers.contains(where: { $0.status != .running }) {
+                if model.transfers.contains(where: { !$0.isActive }) {
                     Button("완료 항목 지우기") { model.clearFinishedTransfers() }
                         .buttonStyle(.borderless)
                         .font(.caption)
@@ -475,6 +475,15 @@ private struct TransferListView: View {
             .frame(maxHeight: 132)
         }
         .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    /// 예: "전송 중 3개 · 대기 5개 (동시에 3개씩)"
+    private var headline: String {
+        guard model.hasActiveTransfers else { return "전송 완료" }
+        let queued = model.queuedTransferCount
+        let running = model.activeTransferCount - queued
+        guard queued > 0 else { return "전송 중 \(running)개" }
+        return "전송 중 \(running)개 · 대기 \(queued)개 (동시에 \(FileBrowserModel.maxConcurrentTransfers)개씩)"
     }
 }
 
@@ -502,7 +511,7 @@ private struct TransferRow: View {
                 }
             }
             switch transfer.status {
-            case .running:
+            case .queued, .running:
                 Button { model.cancel(transfer.id) } label: { Image(systemName: "xmark.circle.fill") }
                     .buttonStyle(.borderless)
                     .foregroundStyle(.secondary)
@@ -521,6 +530,7 @@ private struct TransferRow: View {
 
     private var iconColor: Color {
         switch transfer.status {
+        case .queued: .secondary
         case .running: .accentColor
         case .finished: .green
         case .failed: .red
@@ -533,6 +543,8 @@ private struct TransferRow: View {
         let done = transfer.transferredBytes?.formatted(.byteCount(style: .file))
         let verb = transfer.direction == .upload ? "올리는" : "내려받는"
         switch transfer.status {
+        case .queued:
+            return total.map { "대기 중 · \($0)" } ?? "대기 중"
         case .running:
             if let done, let total { return "\(done) / \(total)" }
             if let done { return "\(verb) 중 · \(done)" }
