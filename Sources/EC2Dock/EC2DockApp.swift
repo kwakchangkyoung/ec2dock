@@ -61,8 +61,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let count = terminals?.runningSessionCount, count > 0 else { return .terminateNow }
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "연결 중인 터미널 \(count)개가 있습니다"
-        alert.informativeText = "EC2Dock을 종료하면 모든 ssh 연결이 끊깁니다."
+        alert.messageText = "연결 중인 터미널·파일 전송 \(count)개가 있습니다"
+        alert.informativeText = "EC2Dock을 종료하면 모든 ssh 연결과 파일 전송이 끊깁니다."
         alert.addButton(withTitle: "종료")
         alert.addButton(withTitle: "취소")
         return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
@@ -125,13 +125,13 @@ private struct TerminalCommands: Commands {
                 .disabled(terminals.activeTab == nil && !terminals.isFocusMode)
             Button("터미널에서 찾기…") { terminals.showFindBar() }
                 .keyboardShortcut("f", modifiers: .command)
-                .disabled(terminals.activeTab == nil)
+                .disabled(terminals.activeTerminalTab == nil)
             Button("다음 찾기") { terminals.find() }
                 .keyboardShortcut("g", modifiers: .command)
-                .disabled(terminals.activeTab == nil || terminals.findQuery.isEmpty)
+                .disabled(terminals.activeTerminalTab == nil || terminals.findQuery.isEmpty)
             Button("이전 찾기") { terminals.find(backwards: true) }
                 .keyboardShortcut("g", modifiers: [.command, .shift])
-                .disabled(terminals.activeTab == nil || terminals.findQuery.isEmpty)
+                .disabled(terminals.activeTerminalTab == nil || terminals.findQuery.isEmpty)
 
             Divider()
 
@@ -179,7 +179,7 @@ private struct TerminalCommands: Commands {
                 .keyboardShortcut("0", modifiers: .command)
                 .disabled(terminals.tabs.isEmpty)
             ForEach(1...9, id: \.self) { number in
-                Button("터미널 탭 \(number)") { terminals.selectTab(number: number) }
+                Button("탭 \(number)") { terminals.selectTab(number: number) }
                     .keyboardShortcut(KeyEquivalent(Character(String(number))), modifiers: .command)
                     .disabled(terminals.tabs.count < number)
             }

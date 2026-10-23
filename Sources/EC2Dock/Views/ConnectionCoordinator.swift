@@ -31,11 +31,18 @@ final class ConnectionCoordinator {
     }
 
     struct PendingConfirmation {
+        enum Action {
+            case connect
+            /// SSH 명령 복사 (복사한 명령으로 바로 운영 서버에 접속할 수 있으므로 같은 확인을 거친다)
+            case copyCommand
+            /// 파일 탭(SFTP) 열기
+            case openFiles
+        }
+
         let target: ConnectionTarget
         let terminal: TerminalApp?
         let source: Source
-        /// 접속 대신 SSH 명령을 복사한다 (복사한 명령으로 바로 운영 서버에 접속할 수 있으므로 같은 확인을 거친다).
-        var copiesCommand = false
+        var action: Action = .connect
     }
 
     /// 목록에서 시작한 동작의 오류 (상세 화면이 보이지 않을 수 있어 알림으로 보여준다)
@@ -85,11 +92,14 @@ final class ConnectionCoordinator {
     func confirmPending() {
         guard let pending = pendingConfirmation else { return }
         pendingConfirmation = nil
-        if pending.copiesCommand {
+        switch pending.action {
+        case .copyCommand:
             copy(pending.target, profileID: pending.target.profile.id, source: pending.source)
-            return
+        case .openFiles:
+            showFiles(pending.target, confirmed: true, source: pending.source)
+        case .connect:
+            Task { await perform(pending.target, confirmed: true, terminal: pending.terminal, source: pending.source) }
         }
-        Task { await perform(pending.target, confirmed: true, terminal: pending.terminal, source: pending.source) }
     }
 
     func perform(_ target: ConnectionTarget, confirmed: Bool, terminal: TerminalApp?, source: Source) async {
@@ -128,6 +138,46 @@ final class ConnectionCoordinator {
             attempt: attempt)
     }
 
+    // MARK: 파일 (SFTP)
+
+    /// 서버 파일 탭을 연다. 이미 열려 있으면 그 탭으로 간다. Production 서버는 접속과 같은 확인을 거친다.
+    func openFiles(profileID: String, source: Source) async {
+        if let tabID = terminals.fileTabID(for: profileID) {
+            terminals.activeTabID = tabID
+            return
+        }
+        do {
+            let target = try state.prepareConnection(for: profileID)
+            if state.requiresProductionConfirmation(for: target.profile) {
+                pendingConfirmation = PendingConfirmation(target: target, terminal: nil, source: source, action: .openFiles)
+            } else {
+                showFiles(target, confirmed: false, source: source)
+            }
+        } catch {
+            listAlert = filesAlert(profileID: profileID, error: error)
+        }
+    }
+
+    private func showFiles(_ target: ConnectionTarget, confirmed: Bool, source: Source) {
+        let profileID = target.profile.id
+        do {
+            let client = try state.fileClient(for: target, productionConfirmed: confirmed)
+            var destination = "\(target.profile.sshUsername)@\(target.address ?? "")"
+            if let bastion = target.bastion { destination += " (경유 \(bastion.profile.displayName))" }
+            terminals.openFiles(FileBrowserModel(profileID: profileID, title: target.profile.displayName,
+                                                 destination: destination, isProduction: target.profile.isProduction,
+                                                 client: client))
+        } catch {
+            listAlert = filesAlert(profileID: profileID, error: error)
+        }
+    }
+
+    private func filesAlert(profileID: String, error: any Error) -> ListAlert {
+        ListAlert(profileID: profileID,
+                  title: "\(state.profile(id: profileID)?.displayName ?? "서버") 파일을 열지 못했습니다",
+                  message: TerminalErrorText.describe(error), attempt: nil)
+    }
+
     // MARK: 목록 동작
 
     func refreshInstance(profileID: String) async {
@@ -150,7 +200,7 @@ final class ConnectionCoordinator {
             return
         }
         if state.requiresProductionConfirmation(for: target.profile) {
-            pendingConfirmation = PendingConfirmation(target: target, terminal: nil, source: source, copiesCommand: true)
+            pendingConfirmation = PendingConfirmation(target: target, terminal: nil, source: source, action: .copyCommand)
         } else {
             copy(target, profileID: profileID, source: source)
         }

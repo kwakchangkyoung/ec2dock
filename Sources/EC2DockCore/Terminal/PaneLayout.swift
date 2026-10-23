@@ -70,14 +70,23 @@ public indirect enum PaneNode: Identifiable, Equatable, Sendable {
     }
 }
 
-/// 내장 터미널 탭 하나: 분할 배치와 포커스된 칸
+/// 세션 탭 하나: 분할 배치와 포커스된 칸
 public struct TerminalTabLayout: Identifiable, Equatable, Sendable {
+    public enum Kind: Sendable {
+        /// 내장 터미널 (분할 가능)
+        case terminal
+        /// 서버 파일(SFTP) 화면. 칸은 하나다.
+        case files
+    }
+
     public let id: UUID
+    public let kind: Kind
     public var root: PaneNode
     public var focusedPaneID: UUID
 
-    public init(id: UUID = UUID(), firstPane: UUID) {
+    public init(id: UUID = UUID(), firstPane: UUID, kind: Kind = .terminal) {
         self.id = id
+        self.kind = kind
         self.root = .pane(firstPane)
         self.focusedPaneID = firstPane
     }
@@ -94,9 +103,9 @@ public struct TerminalTabLayout: Identifiable, Equatable, Sendable {
     }
 }
 
-/// 탭 이동
+/// 탭 이동 (터미널 탭과 파일 탭을 함께 센다)
 public enum TerminalTabNavigation {
-    /// 터미널 탭끼리 `offset`만큼 이동한다 (끝에서는 반대쪽으로 돈다).
+    /// 세션 탭끼리 `offset`만큼 이동한다 (끝에서는 반대쪽으로 돈다).
     /// "서버 정보"(nil)는 순환에 넣지 않는다 — 지나갈 때마다 화면 구성이 바뀌기 때문이다(⌘0으로 이동).
     /// 서버 정보에서 시작하면 앞으로는 첫 탭, 뒤로는 마지막 탭으로 간다. 탭이 없으면 nil.
     public static func adjacent(to current: UUID?, offset: Int, tabs: [UUID]) -> UUID? {

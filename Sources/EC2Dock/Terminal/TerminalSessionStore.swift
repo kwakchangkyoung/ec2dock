@@ -20,6 +20,8 @@ final class TerminalSessionStore {
 
     private(set) var tabs: [TerminalTabLayout] = []
     private(set) var controllers: [UUID: TerminalSessionController] = [:]
+    /// 파일 탭의 화면 상태와 전송 (칸 ID → 모델)
+    private(set) var fileBrowsers: [UUID: FileBrowserModel] = [:]
     /// nil이면 "서버 정보" 탭
     var activeTabID: UUID?
     var pendingSplit: SplitRequest?
@@ -76,9 +78,9 @@ final class TerminalSessionStore {
 
     // MARK: 세션 보호
 
-    /// 연결 중인 ssh·로그인 세션 수 (종료·창 닫기 확인에 사용)
+    /// 연결 중인 ssh·로그인 세션과 진행 중인 파일 전송 수 (종료·창 닫기 확인에 사용)
     var runningSessionCount: Int {
-        controllers.values.filter(\.isRunning).count
+        controllers.values.filter(\.isRunning).count + fileBrowsers.values.map(\.activeTransferCount).reduce(0, +)
     }
 
     /// 메인 창에서 ⌘W:
@@ -96,8 +98,8 @@ final class TerminalSessionStore {
         guard runningSessionCount > 0 else { return false }
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "연결 중인 터미널 \(runningSessionCount)개가 있습니다"
-        alert.informativeText = "창을 닫으면 모든 ssh 연결이 끊깁니다."
+        alert.messageText = "연결 중인 터미널·파일 전송 \(runningSessionCount)개가 있습니다"
+        alert.informativeText = "창을 닫으면 모든 ssh 연결과 파일 전송이 끊깁니다."
         alert.addButton(withTitle: "창 닫기")
         alert.addButton(withTitle: "취소")
         alert.beginSheetModal(for: window) { [weak self, weak window] response in
@@ -117,7 +119,7 @@ final class TerminalSessionStore {
     // MARK: 찾기 (⌘F)
 
     func showFindBar() {
-        guard activeTab != nil else { return }
+        guard activeTerminalTab != nil else { return }
         isFindBarVisible = true
     }
 
@@ -142,6 +144,20 @@ final class TerminalSessionStore {
 
     var activeTab: TerminalTabLayout? {
         tabs.first { $0.id == activeTabID }
+    }
+
+    /// 보고 있는 탭이 터미널 탭이면 그 탭 (찾기·분할은 터미널 탭에서만)
+    var activeTerminalTab: TerminalTabLayout? {
+        activeTab?.kind == .terminal ? activeTab : nil
+    }
+
+    func fileBrowser(id: UUID) -> FileBrowserModel? {
+        fileBrowsers[id]
+    }
+
+    /// 이 서버의 파일 탭이 이미 열려 있으면 그 탭 ID
+    func fileTabID(for profileID: String) -> UUID? {
+        tabs.first { $0.kind == .files && fileBrowsers[$0.focusedPaneID]?.profileID == profileID }?.id
     }
 
     func controller(id: UUID) -> TerminalSessionController? {
@@ -169,6 +185,18 @@ final class TerminalSessionStore {
     func open(_ session: EmbeddedTerminalSession) {
         addController(for: session)
         let tab = TerminalTabLayout(firstPane: session.id)
+        tabs.append(tab)
+        activeTabID = tab.id
+    }
+
+    /// 서버 파일 탭을 연다. 같은 서버의 파일 탭이 있으면 그 탭을 보여준다.
+    func openFiles(_ model: FileBrowserModel) {
+        if let existing = fileTabID(for: model.profileID) {
+            activeTabID = existing
+            return
+        }
+        fileBrowsers[model.id] = model
+        let tab = TerminalTabLayout(firstPane: model.id, kind: .files)
         tabs.append(tab)
         activeTabID = tab.id
     }
@@ -206,6 +234,7 @@ final class TerminalSessionStore {
     func close(id: UUID) {
         loginContexts[id] = nil
         controllers.removeValue(forKey: id)?.terminate()
+        fileBrowsers.removeValue(forKey: id)?.cancelAllTransfers()
         guard let index = tabs.firstIndex(where: { $0.contains(id) }) else { return }
         if let remaining = tabs[index].root.removing(id) {
             tabs[index].root = remaining
@@ -223,6 +252,7 @@ final class TerminalSessionStore {
         for paneID in tabs[index].root.paneIDs {
             loginContexts[paneID] = nil
             controllers.removeValue(forKey: paneID)?.terminate()
+            fileBrowsers.removeValue(forKey: paneID)?.cancelAllTransfers()
         }
         removeTab(at: index)
     }
@@ -282,10 +312,10 @@ final class TerminalSessionStore {
         pendingSplit = SplitRequest(tabID: tab.id, paneID: tab.focusedPaneID, profileID: profileID, axis: axis)
     }
 
-    /// 단축키로 포커스된 칸을 닫는다. 연결 중이면 확인을 받는다.
+    /// 단축키로 포커스된 칸을 닫는다. 연결 중이거나 파일을 전송 중이면 확인을 받는다.
     func requestCloseFocusedPane() {
         guard let tab = activeTab else { return }
-        if controllers[tab.focusedPaneID]?.isRunning == true {
+        if controllers[tab.focusedPaneID]?.isRunning == true || fileBrowsers[tab.focusedPaneID]?.hasActiveTransfers == true {
             pendingClosePaneID = tab.focusedPaneID
         } else {
             close(id: tab.focusedPaneID)

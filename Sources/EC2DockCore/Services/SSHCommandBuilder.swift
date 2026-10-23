@@ -37,25 +37,7 @@ public struct SSHCommandBuilder: Sendable {
 
         case .bastionSSH:
             guard let host = target.address, InputValidator.isValidIPAddress(host) else { throw .noPrivateIP }
-            guard let bastion = target.bastion else { throw .bastionNotConfigured }
-            guard InputValidator.isValidIPAddress(bastion.address) else { throw .bastionNoPublicIP }
-            guard InputValidator.isValidSSHUsername(bastion.profile.sshUsername), InputValidator.isValidPort(bastion.profile.sshPort),
-                  InputValidator.isValidInstanceID(bastion.profile.instanceID), InputValidator.validate(bastion.settings).isEmpty else {
-                throw .invalidConfiguration(["Bastion 서버의 접속 설정을 확인하세요."])
-            }
-
-            // Bastion 구간: 같은 ssh를 -W로 실행해 대상 서버까지의 통로만 연다.
-            // 대상 주소를 직접 넣어 %h/%p 토큰 해석에 의존하지 않는다.
-            let forward = host.contains(":") ? "[\(host)]:\(profile.sshPort)" : "\(host):\(profile.sshPort)"
-            var jump = [Self.sshPath] + (try keyArguments(bastion.settings))
-            jump += [
-                "-o", "ConnectTimeout=\(bastion.settings.connectTimeoutSeconds)",
-                "-o", "HostKeyAlias=\(bastion.profile.instanceID)",
-                "-p", String(bastion.profile.sshPort),
-                "-W", forward,
-                "--", "\(bastion.profile.sshUsername)@\(bastion.address)",
-            ]
-            let proxyCommand = Self.proxyCommandValue(jump)
+            let proxyCommand = try bastionProxyCommand(for: target, host: host)
 
             var arguments = try hopArguments(instanceID: profile.instanceID, username: profile.sshUsername, host: host,
                                              port: profile.sshPort, settings: settings)
@@ -67,6 +49,70 @@ public struct SSHCommandBuilder: Sendable {
         case .ssm:
             throw .unsupportedConnectionType(.ssm)
         }
+    }
+
+    public static let sftpPath = "/usr/bin/sftp"
+
+    /// SFTP(파일 주고받기) 명령. ssh 접속과 같은 키·인스턴스 ID 기준 호스트 키 검증·Bastion 경로를 쓰고,
+    /// 실행할 sftp 명령은 `batchFile`에서 읽는다.
+    /// - `BatchMode=yes`: 암호·호스트 키 확인을 묻지 않고 실패한다(화면에서 원인을 안내한다). 호스트 키 검증 자체는 그대로다.
+    /// - `controlPath`가 있으면 연결을 재사용해 폴더를 옮기거나 전송할 때마다 새로 인증하지 않는다.
+    public func sftpCommand(for target: ConnectionTarget, batchFile: String,
+                            controlPath: String?) throws(ConnectionError) -> TerminalCommand {
+        let profile = target.profile
+        let settings = target.settings
+        let issues = InputValidator.validate(profile) + InputValidator.validate(settings)
+        guard issues.isEmpty else { throw .invalidConfiguration(issues.map(\.message)) }
+
+        var options = try keyArguments(settings) + [
+            "-o", "ConnectTimeout=\(settings.connectTimeoutSeconds)",
+            "-o", "HostKeyAlias=\(profile.instanceID)",
+            "-o", "BatchMode=yes",
+        ]
+        if let controlPath {
+            options += ["-o", "ControlMaster=auto", "-o", "ControlPath=\(controlPath)", "-o", "ControlPersist=60"]
+        }
+
+        let host: String
+        switch profile.connectionType {
+        case .directSSH:
+            guard let address = target.address, InputValidator.isValidIPAddress(address) else { throw .noPublicIP }
+            host = address
+        case .bastionSSH:
+            guard let address = target.address, InputValidator.isValidIPAddress(address) else { throw .noPrivateIP }
+            host = address
+            options += ["-o", "ProxyCommand=\(try bastionProxyCommand(for: target, host: address))"]
+        case .ssm:
+            throw .unsupportedConnectionType(.ssm)
+        }
+        let destination = host.contains(":") ? "[\(host)]" : host
+        return TerminalCommand(executable: Self.sftpPath, arguments: options + [
+            "-P", String(profile.sshPort),
+            "-b", batchFile,
+            "--", "\(profile.sshUsername)@\(destination)",
+        ])
+    }
+
+    /// Bastion 구간: 같은 ssh를 -W로 실행해 대상 서버까지의 통로만 연다.
+    /// 대상 주소를 직접 넣어 %h/%p 토큰 해석에 의존하지 않는다.
+    private func bastionProxyCommand(for target: ConnectionTarget, host: String) throws(ConnectionError) -> String {
+        guard let bastion = target.bastion else { throw .bastionNotConfigured }
+        guard InputValidator.isValidIPAddress(bastion.address) else { throw .bastionNoPublicIP }
+        guard InputValidator.isValidSSHUsername(bastion.profile.sshUsername), InputValidator.isValidPort(bastion.profile.sshPort),
+              InputValidator.isValidInstanceID(bastion.profile.instanceID), InputValidator.validate(bastion.settings).isEmpty else {
+            throw .invalidConfiguration(["Bastion 서버의 접속 설정을 확인하세요."])
+        }
+        let port = target.profile.sshPort
+        let forward = host.contains(":") ? "[\(host)]:\(port)" : "\(host):\(port)"
+        var jump = [Self.sshPath] + (try keyArguments(bastion.settings))
+        jump += [
+            "-o", "ConnectTimeout=\(bastion.settings.connectTimeoutSeconds)",
+            "-o", "HostKeyAlias=\(bastion.profile.instanceID)",
+            "-p", String(bastion.profile.sshPort),
+            "-W", forward,
+            "--", "\(bastion.profile.sshUsername)@\(bastion.address)",
+        ]
+        return Self.proxyCommandValue(jump)
     }
 
     /// 한 구간의 ssh 인자: 키, 타임아웃, 인스턴스 ID 기준 호스트 키 검증, 포트, 목적지
