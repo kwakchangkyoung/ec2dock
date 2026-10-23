@@ -4,6 +4,34 @@ macOS용 AWS EC2 서버 접속 관리 앱. 요구사항 기준 문서: `EC2Dock_
 
 현재 상태: **Phase 3 + Phase 5(iCloud 동기화)**. AWS CLI로 실제 EC2 목록을 조회해 캐시하고, 접속 시 캐시된 IP로 바로 SSH 접속합니다(내장 터미널, iTerm2, Terminal). Direct SSH와 Bastion SSH를 지원하며, SSM은 아직 지원하지 않습니다.
 
+## 다운로드
+
+**[⬇︎ EC2Dock.dmg 내려받기](https://github.com/kwakchangkyoung/ec2dock/releases/latest/download/EC2Dock.dmg)** · [zip](https://github.com/kwakchangkyoung/ec2dock/releases/latest/download/EC2Dock.zip) · [모든 릴리스](https://github.com/kwakchangkyoung/ec2dock/releases)
+
+- 필요 환경: macOS 14 이상, **Apple Silicon Mac**, AWS CLI v2 (`brew install awscli`)
+- 설치: dmg를 열어 EC2Dock을 응용 프로그램 폴더로 끌어다 놓습니다.
+- 처음 실행: Apple Developer ID 서명·공증을 하지 않은 빌드라, 내려받은 앱을 처음 열면 macOS가 막습니다("손상되었기 때문에 열 수 없습니다" 또는 "확인되지 않은 개발자"). 아래 명령을 한 번 실행하거나, 한 번 열어 본 뒤 **시스템 설정 > 개인정보 보호 및 보안**에서 "그래도 열기"를 누르세요.
+
+```bash
+xattr -dr com.apple.quarantine /Applications/EC2Dock.app
+```
+
+AWS 계정 없이 둘러보려면 샘플 데이터로 실행합니다.
+
+```bash
+/Applications/EC2Dock.app/Contents/MacOS/EC2Dock --sample-data
+```
+
+## 스크린샷
+
+서버 목록과 서버 정보 (샘플 데이터)
+
+![EC2Dock 서버 목록과 서버 정보](docs/images/overview.png)
+
+파일 탭: 서버 파일 올리기·내리기 (SFTP, 동시 3개씩 전송)
+
+![EC2Dock 파일 탭](docs/images/files.png)
+
 ## iCloud 동기화
 
 - 설정(⌘,) > 동기화 탭에서 켭니다(기본값 꺼짐). 회사 정책상 계정 ID·서버 이름을 개인 iCloud에 저장해도 되는지 먼저 확인하세요.
@@ -125,7 +153,7 @@ macOS용 AWS EC2 서버 접속 관리 앱. 요구사항 기준 문서: `EC2Dock_
 
 SwiftTerm은 1.11.2로 고정했습니다. 1.12.0부터 Metal 셰이더가 포함되어 Xcode의 `metal` 컴파일러가 필요하기 때문입니다. Xcode로 빌드하게 되면 최신 버전으로 올릴 수 있습니다.
 
-## 앱으로 설치
+## 소스에서 빌드해 설치
 
 ```bash
 ./scripts/build-app.sh
@@ -136,6 +164,8 @@ cp -R dist/EC2Dock.app /Applications/
 ```
 
 ad-hoc 서명이라 이 Mac 전용입니다. 다른 Mac에 배포하려면 Developer ID 서명과 공증이 필요합니다. 자세한 내용은 `docs/DEPLOYMENT.md`를 참고하세요.
+
+릴리스 파일(zip, dmg)은 `VERSION=0.1.0 ./scripts/package.sh`로 만들고, GitHub Release에 `EC2Dock.dmg`·`EC2Dock.zip`이라는 고정 이름으로 올립니다. 그래야 위 다운로드 링크(`releases/latest/download/...`)가 항상 최신 버전을 가리킵니다.
 
 ## 구조
 
