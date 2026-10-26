@@ -574,7 +574,7 @@ struct TerminalHostView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSView {
-        let container = NSView()
+        let container = TerminalContainerView()
         attach(to: container)
         context.coordinator.wasFocused = isFocused
         return container
@@ -595,9 +595,11 @@ struct TerminalHostView: NSViewRepresentable {
 
     private func attach(to container: NSView) {
         terminalView.removeFromSuperview()
-        terminalView.frame = container.bounds
-        terminalView.autoresizingMask = [.width, .height]
+        // 크기는 TerminalContainerView가 맞춘다. 막 만든 칸은 아직 0×0이라 여기서 크기를 넣지 않는다.
+        terminalView.autoresizingMask = []
         container.addSubview(terminalView)
+        (container as? TerminalContainerView)?.fitTerminal()
+        terminalView.needsDisplay = true
         focusIfNeeded()
     }
 
@@ -608,6 +610,24 @@ struct TerminalHostView: NSViewRepresentable {
             if let window = view.window, window.firstResponder !== view {
                 window.makeFirstResponder(view)
             }
+        }
+    }
+}
+
+/// 터미널 뷰를 담는 칸. 크기가 정해지기 전(0×0)에는 터미널 크기를 바꾸지 않는다.
+/// SwiftTerm은 크기가 바뀔 때마다 열·행을 다시 계산하고 줄을 다시 배치(reflow)한다.
+/// 탭을 옮겨 새 칸에 붙을 때 0×0을 그대로 넣으면 최소 크기(2열)로 줄었다가 원래 크기로 돌아오면서
+/// 화면 글자가 겹치거나 사라지고, 서버에도 창 크기 변경 신호가 연달아 가 프롬프트가 엉뚱한 줄에 다시 그려진다.
+final class TerminalContainerView: NSView {
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        fitTerminal()
+    }
+
+    func fitTerminal() {
+        guard bounds.width >= 1, bounds.height >= 1 else { return }
+        for subview in subviews where subview.frame != bounds {
+            subview.frame = bounds
         }
     }
 }
