@@ -61,8 +61,12 @@ final class TerminalSessionStore {
             return event
         }
         // ⌘W가 메인 창(과 그 안의 모든 ssh 세션)을 바로 닫지 않게 한다.
+        // fn+화살표(Home/End/Page Up/Down)는 SwiftTerm이 서버에 보내지 않으므로 여기서 대신 보낸다.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            let consumed = MainActor.assumeIsolated { self?.handleCloseShortcut(event) ?? false }
+            let consumed = MainActor.assumeIsolated {
+                guard let self else { return false }
+                return self.handleCloseShortcut(event) || self.sendNavigationKey(event)
+            }
             return consumed ? nil : event
         }
     }
@@ -112,6 +116,27 @@ final class TerminalSessionStore {
         return true
     }
 
+    /// fn+←/→/↑/↓(Home/End/Page Up/Down)를 포커스된 내장 터미널의 프로그램(vim 등)에 보낸다. 보냈으면 true.
+    private func sendNavigationKey(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.function, .numericPad])
+        guard modifiers.isEmpty, let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first,
+              let view = event.window?.firstResponder as? LocalProcessTerminalView,
+              controllers.values.contains(where: { $0.terminalView === view }) else { return false }
+        let key: TerminalKeyMapping.Key
+        switch Int(scalar.value) {
+        case NSHomeFunctionKey: key = .home
+        case NSEndFunctionKey: key = .end
+        case NSPageUpFunctionKey: key = .pageUp
+        case NSPageDownFunctionKey: key = .pageDown
+        default: return false
+        }
+        let terminal = view.getTerminal()
+        guard let bytes = TerminalKeyMapping.bytes(for: key, applicationCursor: terminal.applicationCursor,
+                                                   alternateScreen: terminal.isCurrentBufferAlternate) else { return false }
+        view.send(bytes)
+        return true
+    }
+
     func closeAllTabs() {
         for tab in tabs { closeTab(id: tab.id) }
     }
@@ -125,6 +150,7 @@ final class TerminalSessionStore {
 
     func hideFindBar() {
         isFindBarVisible = false
+        controllers.values.forEach { $0.isSearchHighlighted = false }
         guard let tab = activeTab, let view = controllers[tab.focusedPaneID]?.terminalView else { return }
         view.selectNone()
         // 찾기를 마치면 다시 터미널에 입력할 수 있게 한다.
@@ -134,9 +160,12 @@ final class TerminalSessionStore {
     /// 포커스된 칸에서 다음/이전 결과를 찾는다. 찾으면 선택하고 그 위치로 스크롤한다.
     @discardableResult
     func find(backwards: Bool = false) -> Bool {
-        guard let tab = activeTab, let view = controllers[tab.focusedPaneID]?.terminalView, !findQuery.isEmpty else {
+        guard let tab = activeTab, let controller = controllers[tab.focusedPaneID], !findQuery.isEmpty else {
             return false
         }
+        // 찾은 곳은 선택으로 표시된다. 일반 선택색은 어두운 화면에서 거의 보이지 않아 찾는 동안은 진한 색을 쓴다.
+        controller.isSearchHighlighted = true
+        let view = controller.terminalView
         return backwards ? view.findPrevious(findQuery) : view.findNext(findQuery)
     }
 
@@ -444,14 +473,33 @@ final class TerminalSessionController: Identifiable {
     /// 터미널 주변 여백에도 같은 배경색을 쓴다.
     private(set) var backgroundColor = TerminalAppearance.standard.colors.background
 
+    /// 찾기 결과를 표시하는 중인지. 켜면 선택색을 찾기용 진한 색으로 바꾼다.
+    var isSearchHighlighted = false {
+        didSet {
+            guard isSearchHighlighted != oldValue else { return }
+            applySelectionColor()
+        }
+    }
+
     func apply(_ appearance: TerminalAppearance) {
         let colors = appearance.colors
         terminalView.font = NSFont.monospacedSystemFont(ofSize: CGFloat(appearance.fontSize), weight: .regular)
         terminalView.nativeBackgroundColor = colors.background
         terminalView.nativeForegroundColor = colors.foreground
         terminalView.caretColor = .controlAccentColor
-        terminalView.selectedTextBackgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.35)
         backgroundColor = colors.background
+        applySelectionColor()
+    }
+
+    /// 일반 선택: 옅은 강조색. 찾기 결과: 어두운 화면은 진한 강조색, 밝은 화면은 노란 찾기색(Safari·Xcode와 같은 색).
+    private func applySelectionColor() {
+        let isDark = (backgroundColor.usingColorSpace(.sRGB)?.brightnessComponent ?? 0) < 0.5
+        terminalView.selectedTextBackgroundColor = switch (isSearchHighlighted, isDark) {
+        case (false, _): NSColor.controlAccentColor.withAlphaComponent(0.35)
+        case (true, true): NSColor.controlAccentColor.withAlphaComponent(0.8)
+        case (true, false): NSColor.findHighlightColor.withAlphaComponent(0.85)
+        }
+        terminalView.needsDisplay = true
     }
 
     func terminate() {

@@ -110,3 +110,22 @@ struct TerminalTabNavigationTests {
         #expect(TerminalTabNavigation.tab(number: 3, tabs: tabs) == nil)          // 없는 번호는 이동 안 함
     }
 }
+
+@Suite("TerminalKeyMapping")
+struct TerminalKeyMappingTests {
+    /// fn+←/→(Home/End)는 vim처럼 응용 커서 모드를 켠 프로그램에는 SS3 형식으로, 셸에는 CSI 형식으로 보낸다.
+    @Test func homeAndEndFollowCursorMode() {
+        #expect(TerminalKeyMapping.bytes(for: .home, applicationCursor: true, alternateScreen: true) == [0x1b, 0x4f, 0x48])
+        #expect(TerminalKeyMapping.bytes(for: .end, applicationCursor: true, alternateScreen: true) == [0x1b, 0x4f, 0x46])
+        #expect(TerminalKeyMapping.bytes(for: .home, applicationCursor: false, alternateScreen: false) == [0x1b, 0x5b, 0x48])
+        #expect(TerminalKeyMapping.bytes(for: .end, applicationCursor: false, alternateScreen: false) == [0x1b, 0x5b, 0x46])
+    }
+
+    /// fn+↑/↓(Page Up/Down)는 전체 화면 프로그램에만 보내고, 셸에서는 지난 출력 스크롤로 둔다.
+    @Test func pageKeysOnlyInAlternateScreen() {
+        #expect(TerminalKeyMapping.bytes(for: .pageUp, applicationCursor: false, alternateScreen: true) == [0x1b, 0x5b, 0x35, 0x7e])
+        #expect(TerminalKeyMapping.bytes(for: .pageDown, applicationCursor: true, alternateScreen: true) == [0x1b, 0x5b, 0x36, 0x7e])
+        #expect(TerminalKeyMapping.bytes(for: .pageUp, applicationCursor: false, alternateScreen: false) == nil)
+        #expect(TerminalKeyMapping.bytes(for: .pageDown, applicationCursor: true, alternateScreen: false) == nil)
+    }
+}
