@@ -16,6 +16,8 @@ macOS용 AWS EC2 서버 접속 관리 앱. 요구사항 기준 문서: `EC2Dock_
 xattr -dr com.apple.quarantine /Applications/EC2Dock.app
 ```
 
+- 업데이트: 0.1.2부터는 앱이 하루에 한 번 새 버전을 확인하고, 내려받아 두었다가 앱을 종료할 때 설치합니다. **EC2Dock > 업데이트 확인…**으로 바로 확인할 수 있고, 설정 > 일반 > 업데이트에서 끌 수 있습니다. 업데이트 파일은 서명을 확인한 뒤에만 설치합니다. 0.1.1 이하를 쓰고 있다면 한 번만 직접 내려받아 설치하세요.
+
 AWS 계정 없이 둘러보려면 샘플 데이터로 실행합니다.
 
 ```bash
@@ -165,7 +167,7 @@ cp -R dist/EC2Dock.app /Applications/
 
 ad-hoc 서명이라 이 Mac 전용입니다. 다른 Mac에 배포하려면 Developer ID 서명과 공증이 필요합니다. 자세한 내용은 `docs/DEPLOYMENT.md`를 참고하세요.
 
-릴리스 파일(zip, dmg)은 `VERSION=0.1.0 ./scripts/package.sh`로 만들고, GitHub Release에 `EC2Dock.dmg`·`EC2Dock.zip`이라는 고정 이름으로 올립니다. 그래야 위 다운로드 링크(`releases/latest/download/...`)가 항상 최신 버전을 가리킵니다.
+릴리스 파일(zip, dmg, appcast.xml)은 `VERSION=0.1.0 ./scripts/package.sh`로 만들고, GitHub Release(태그 `v<버전>`)에 `EC2Dock.dmg`·`EC2Dock.zip`·`appcast.xml`이라는 고정 이름으로 올립니다. 그래야 위 다운로드 링크와 앱의 자동 업데이트(`releases/latest/download/...`)가 항상 최신 버전을 가리킵니다. 자동 업데이트 설정은 `docs/DEPLOYMENT.md`를 참고하세요.
 
 ## 구조
 

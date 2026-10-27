@@ -34,10 +34,10 @@ cp -R dist/EC2Dock.app /Applications/
 | 파일 | 역할 |
 |---|---|
 | `scripts/build-app.sh` | 릴리스 빌드 → `.app` 번들 구성 → 코드 서명 → 검증 |
-| `scripts/package.sh` | build-app.sh 실행 → zip, dmg 생성 → (조건 충족 시) 공증·스테이플 |
+| `scripts/package.sh` | build-app.sh 실행 → zip, dmg 생성 → 서명된 자동 업데이트 목록(appcast.xml) 생성 → (조건 충족 시) 공증·스테이플 |
 | `scripts/make-icon.sh` | `Packaging/AppIcon.icns` 재생성 (아이콘을 바꿀 때만) |
 | `Packaging/Info.plist` | 번들 정보 템플릿 (버전·빌드 번호·번들 ID는 스크립트가 채움) |
-| `Packaging/EC2Dock.entitlements` | Hardened Runtime 엔타이틀먼트 (Apple Events) |
+| `Packaging/EC2Dock.entitlements` | Hardened Runtime 엔타이틀먼트 (Apple Events). ad-hoc 빌드에서는 build-app.sh가 라이브러리 검증 끄기를 더한다 (아래 자동 업데이트 참고) |
 
 환경 변수:
 
@@ -48,6 +48,9 @@ cp -R dist/EC2Dock.app /Applications/
 | `BUNDLE_ID` | `io.github.kwakchangkyoung.ec2dock` | 번들 ID. Apple Developer에 등록할 App ID와 같아야 한다 |
 | `SIGN_IDENTITY` | `-` (ad-hoc) | 서명 인증서 이름 |
 | `NOTARY_PROFILE` | 없음 | 공증용 키체인 프로필 이름 |
+| `FEED_URL` | GitHub 최신 릴리스의 `appcast.xml` | 앱이 확인할 자동 업데이트 목록 주소 |
+| `DOWNLOAD_URL` | 릴리스 `v<버전>`의 `EC2Dock.zip` | appcast에 적을 업데이트 파일 주소 |
+| `RELEASE_NOTES` | 없음 | 업데이트 창에 보여줄 변경 사항 마크다운 파일 |
 
 ## 4. Developer ID 서명과 공증 (다른 Mac에 배포할 때)
 
@@ -73,6 +76,24 @@ cp -R dist/EC2Dock.app /Applications/
    ```
 
 `notarytool`과 `stapler`는 Command Line Tools에도 들어 있어 Xcode 없이 공증할 수 있다.
+
+## 자동 업데이트 (Sparkle)
+
+앱은 [Sparkle](https://sparkle-project.org)로 `FEED_URL`의 `appcast.xml`을 하루에 한 번 확인하고, 새 버전을 내려받아 두었다가 앱을 종료할 때 설치한다.
+
+- **서명 키**: 업데이트 파일(zip)과 appcast.xml을 EdDSA 키로 서명한다. 앱은 `Info.plist`의 `SUPublicEDKey`와 맞는 서명이 있을 때만 설치하고(`SURequireSignedFeed`, `SUVerifyUpdateBeforeExtraction`), 서명이 없거나 내용이 바뀐 목록·파일은 무시한다.
+- **개인 키는 로그인 키체인에 있다** (Sparkle `generate_keys`로 만듦). 이 키를 잃으면 이미 설치된 앱에 더는 업데이트를 보낼 수 없으므로 반드시 백업한다. 백업 파일은 비밀번호 관리자 등 안전한 곳에 두고 저장소에 넣지 않는다.
+  ```bash
+  .build/artifacts/sparkle/Sparkle/bin/generate_keys -x ec2dock-sparkle-private-key.txt
+  ```
+  다른 Mac에서 릴리스하려면 그 Mac에서 `generate_keys -f <백업 파일>`로 가져온다.
+- **ad-hoc 빌드**: ad-hoc 서명에는 팀 ID가 없어 Hardened Runtime의 라이브러리 검증이 Sparkle.framework를 거부한다. 그래서 `SIGN_IDENTITY`가 `-`일 때만 `com.apple.security.cs.disable-library-validation`을 더해 서명한다. Developer ID로 서명하면 앱과 프레임워크의 팀 ID가 같아 이 설정은 들어가지 않는다.
+- **릴리스 순서**:
+  ```bash
+  VERSION=0.1.2 RELEASE_NOTES=notes.md ./scripts/package.sh
+  ```
+  `dist/EC2Dock-0.1.2.zip`·`.dmg`를 `EC2Dock.zip`·`EC2Dock.dmg`로 이름을 바꿔 `dist/appcast.xml`과 함께 릴리스 `v0.1.2`에 올린다. appcast.xml은 서명된 뒤 내용을 고치면 앱이 거부하므로 손으로 고치지 않는다.
+- 업데이트 비교는 `CFBundleVersion`(기본: git 커밋 수)으로 하므로 릴리스는 항상 main에서 만든다.
 
 ## 5. iCloud 앱 전용 컨테이너로 이전 (Developer ID 준비 후)
 

@@ -11,6 +11,7 @@ struct EC2DockApp: App {
     @ViewState private var state: AppState
     @ViewState private var terminals: TerminalSessionStore
     @ViewState private var connections: ConnectionCoordinator
+    @ViewState private var updater = AppUpdater()
 
     init() {
         // `swift run`으로 실행할 때도 Dock 아이콘과 키보드 포커스를 갖도록 한다.
@@ -41,6 +42,12 @@ struct EC2DockApp: App {
         .commands {
             // 창은 하나만 쓴다: 터미널 화면과 ⌘W 처리가 메인 창 하나를 기준으로 동작한다.
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(after: .appInfo) {
+                if updater.isAvailable {
+                    Button("업데이트 확인…") { updater.checkForUpdates() }
+                        .disabled(!updater.canCheckForUpdates)
+                }
+            }
             TerminalCommands(state: state, terminals: terminals)
         }
 
@@ -48,6 +55,7 @@ struct EC2DockApp: App {
             PreferencesView()
                 .environment(state)
                 .environment(terminals)
+                .environment(updater)
                 .frame(width: 560, height: 600)
         }
     }
