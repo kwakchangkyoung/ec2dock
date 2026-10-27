@@ -21,10 +21,28 @@ struct PreferencesView: View {
 
 private struct GeneralSettingsTab: View {
     @Environment(AppState.self) private var state
+    @Environment(AppUpdater.self) private var updater
 
     var body: some View {
         @Bindable var state = state
+        @Bindable var updater = updater
         Form {
+            Section {
+                LabeledContent("현재 버전", value: updater.currentVersion)
+                if updater.isAvailable {
+                    Toggle("새 버전 자동으로 확인", isOn: $updater.automaticallyChecksForUpdates)
+                    Toggle("새 버전을 내려받아 두고 종료할 때 설치", isOn: $updater.automaticallyDownloadsUpdates)
+                        .disabled(!updater.automaticallyChecksForUpdates)
+                    Button("지금 확인") { updater.checkForUpdates() }
+                        .disabled(!updater.canCheckForUpdates)
+                }
+            } header: {
+                Text("업데이트")
+            } footer: {
+                Text(updater.isAvailable
+                     ? "GitHub 릴리스에서 하루에 한 번 확인합니다. 업데이트 파일은 서명을 확인한 뒤에만 설치합니다."
+                     : "앱 번들(EC2Dock.app)로 실행할 때만 업데이트를 확인합니다.")
+            }
             Section("접속") {
                 Toggle("운영(Production) 서버 접속 전 확인", isOn: $state.preferences.confirmProductionConnections)
                 Text("서버 이름, 계정, 리전, 접속 주소를 보여주고 한 번 더 확인합니다.")

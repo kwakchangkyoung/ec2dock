@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- scripts/build-app.sh가 __VERSION__, __BUILD__, __BUNDLE_ID__를 채운다. -->
+<!-- scripts/build-app.sh가 __VERSION__, __BUILD__, __BUNDLE_ID__, __FEED_URL__을 채운다. -->
 <plist version="1.0">
 <dict>
     <key>CFBundleDevelopmentRegion</key>
@@ -34,5 +34,18 @@
     <!-- iTerm2/Terminal에서 SSH 창을 열 때 macOS가 보여주는 자동화 권한 안내 문구 -->
     <key>NSAppleEventsUsageDescription</key>
     <string>iTerm2 또는 Terminal에서 서버 접속 창을 열기 위해 터미널 앱을 제어합니다.</string>
+    <!-- 자동 업데이트 (Sparkle). 업데이트 목록(appcast)과 파일 모두 아래 공개 키에 맞는 서명이 있어야 설치한다. -->
+    <key>SUFeedURL</key>
+    <string>__FEED_URL__</string>
+    <key>SUPublicEDKey</key>
+    <string>6R3lrqBsT0L4TvkJ+Si8ByMqeEK8SS2Kp3r2SVdhzZs=</string>
+    <key>SURequireSignedFeed</key>
+    <true/>
+    <key>SUVerifyUpdateBeforeExtraction</key>
+    <true/>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUAutomaticallyUpdate</key>
+    <true/>
 </dict>
 </plist>
