@@ -10,6 +10,9 @@ public actor MockAWSDiscoveryService: AWSDiscoveryService {
     private var activeDescribeCalls = 0
     /// 동시에 실행된 리전 조회의 최대 개수 (동시 조회 제한 확인용)
     public private(set) var maxConcurrentDescribeCalls = 0
+    private var activeIdentityCalls = 0
+    /// 동시에 실행된 계정 확인의 최대 개수 (계정 확인 병렬 실행 확인용)
+    public private(set) var maxConcurrentIdentityCalls = 0
 
     public init(accounts: [String: String], instances: [EC2Instance], latency: Duration = .zero) {
         self.accounts = accounts
@@ -26,6 +29,9 @@ public actor MockAWSDiscoveryService: AWSDiscoveryService {
     }
 
     public func callerIdentity(profile: String) async throws -> AWSCallerIdentity {
+        activeIdentityCalls += 1
+        maxConcurrentIdentityCalls = max(maxConcurrentIdentityCalls, activeIdentityCalls)
+        defer { activeIdentityCalls -= 1 }
         try await simulateCall()
         let accountID = try account(for: profile)
         return AWSCallerIdentity(accountID: accountID, arn: "arn:aws:iam::\(accountID):user/mock")
