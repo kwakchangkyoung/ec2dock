@@ -29,7 +29,7 @@ final class FileBrowserModel: Identifiable {
         let localURL: URL
         let remotePath: String
         /// 알 수 있을 때만 (폴더 올리기·내려받기는 전체 크기를 미리 모를 수 있다)
-        let totalBytes: Int64?
+        var totalBytes: Int64?
         var transferredBytes: Int64?
         var status: Status = .queued
 
@@ -53,16 +53,26 @@ final class FileBrowserModel: Identifiable {
 
     /// 지금 보는 폴더. 처음 목록을 읽기 전에는 nil.
     private(set) var path: String?
-    private(set) var entries: [RemoteFileEntry] = []
+    private(set) var entries: [RemoteFileEntry] = [] {
+        didSet { updateVisibleEntries() }
+    }
+    /// 폴더 먼저, 이름순 (Finder와 같은 자연 정렬). 전송 진행률이 바뀔 때마다 다시 정렬하지 않도록 목록이 바뀔 때만 계산한다.
+    private(set) var visibleEntries: [RemoteFileEntry] = []
     private(set) var isLoading = false
     /// 처음 목록을 읽지 못한 오류 (목록 대신 안내를 보여준다)
     private(set) var loadError: (any Error)?
     /// 목록이 있는 상태에서 난 오류 (알림으로 보여주고 목록은 유지한다)
     var actionError: String?
-    var showsHidden = false
+    var showsHidden = false {
+        didSet { updateVisibleEntries() }
+    }
     private(set) var backStack: [String] = []
     private(set) var forwardStack: [String] = []
-    private(set) var transfers: [Transfer] = []
+    private(set) var transfers: [Transfer] = [] {
+        // 진행률이 바뀔 때마다 파일 화면 전체가 다시 그려지지 않도록, 전송 목록을 보일지는 따로 둔다.
+        didSet { if hasTransfers == transfers.isEmpty { hasTransfers = !transfers.isEmpty } }
+    }
+    private(set) var hasTransfers = false
     /// "내리기"의 기본 위치
     var downloadDirectory = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
         ?? FileManager.default.homeDirectoryForCurrentUser
@@ -82,9 +92,8 @@ final class FileBrowserModel: Identifiable {
         self.client = client
     }
 
-    /// 폴더 먼저, 이름순 (Finder와 같은 자연 정렬)
-    var visibleEntries: [RemoteFileEntry] {
-        entries
+    private func updateVisibleEntries() {
+        visibleEntries = entries
             .filter { showsHidden || !$0.isHidden }
             .sorted { lhs, rhs in
                 if lhs.isOpenable != rhs.isOpenable { return lhs.isOpenable }
@@ -207,14 +216,16 @@ final class FileBrowserModel: Identifiable {
     func download(_ selected: [RemoteFileEntry], to directory: URL? = nil) {
         guard let path else { return }
         let folder = directory ?? downloadDirectory
+        // 아직 디스크에 생기지 않은, 대기 중·전송 중인 내려받기 이름도 피한다.
+        // 한 번만 모아 두고 새로 고른 이름을 더해 간다 (파일마다 전송 목록 전체를 다시 훑지 않는다).
+        var reserved = Set(transfers.filter { $0.direction == .download && $0.isActive }.map(\.localURL.standardizedFileURL))
         for entry in selected {
             let isDirectory = entry.kind == .directory
             let remotePath = RemotePath.join(path, entry.name)
-            // 아직 디스크에 생기지 않은, 대기 중·전송 중인 내려받기 이름도 피한다.
-            let reserved = Set(transfers.filter { $0.direction == .download && $0.isActive }.map(\.localURL.standardizedFileURL))
             let localURL = LocalFileNaming.uniqueURL(for: entry.name, in: folder) { url in
                 reserved.contains(url.standardizedFileURL) || FileManager.default.fileExists(atPath: url.path)
             }
+            reserved.insert(localURL.standardizedFileURL)
             let transfer = Transfer(direction: .download, name: entry.name, isDirectory: isDirectory, localURL: localURL,
                                     remotePath: remotePath, totalBytes: isDirectory ? nil : entry.size)
             let client = client
@@ -232,14 +243,22 @@ final class FileBrowserModel: Identifiable {
         for url in urls {
             let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
             let remotePath = RemotePath.join(path, url.lastPathComponent)
+            // 폴더 크기는 안의 파일을 모두 훑어야 하므로 화면이 멈추지 않게 나중에 따로 계산한다.
             let transfer = Transfer(direction: .upload, name: url.lastPathComponent, isDirectory: isDirectory, localURL: url,
-                                    remotePath: remotePath, totalBytes: Self.localSize(of: url))
+                                    remotePath: remotePath, totalBytes: isDirectory ? nil : Self.localSize(of: url))
             let client = client
             start(transfer) {
                 try await client.upload(url, isDirectory: isDirectory, to: remotePath)
             } progress: {
                 // 파일은 서버에 쌓인 크기로 진행률을 본다 (연결 재사용으로 가볍게 확인).
                 isDirectory ? nil : try? await client.size(of: remotePath)
+            }
+            if isDirectory {
+                let id = transfer.id
+                Task.detached(priority: .utility) { [weak self] in
+                    let size = Self.localSize(of: url)
+                    await self?.setTotalBytes(id, size)
+                }
             }
         }
     }
@@ -295,7 +314,17 @@ final class FileBrowserModel: Identifiable {
     }
 
     private func setProgress(_ id: UUID, _ bytes: Int64) {
+        // 같은 값이면 바꾸지 않는다 (바꾸면 전송 목록이 다시 그려진다).
+        guard transfers.first(where: { $0.id == id })?.transferredBytes != bytes else { return }
         update(id) { $0.transferredBytes = bytes }
+    }
+
+    private func setTotalBytes(_ id: UUID, _ bytes: Int64?) {
+        update(id) { item in
+            guard item.totalBytes == nil else { return }
+            item.totalBytes = bytes
+            if item.status == .finished { item.transferredBytes = bytes }
+        }
     }
 
     private func finish(_ id: UUID, status: Transfer.Status) {
@@ -309,9 +338,11 @@ final class FileBrowserModel: Identifiable {
         case (.download, .cancelled), (.download, .failed):
             // 새로 만든 이름으로 받던 것이므로 남은 조각만 지운다. 시작도 안 한(대기 중) 전송은 지울 것이 없다.
             if transfer.status == .running { try? FileManager.default.removeItem(at: transfer.localURL) }
-        case (.upload, .finished):
-            // 지금 보고 있는 폴더에 올렸으면 목록을 새로 고친다.
-            if let path, RemotePath.parent(of: transfer.remotePath) == path {
+        case (.upload, _):
+            // 지금 보고 있는 폴더에 올렸으면 목록을 새로 고친다 (실패·취소도 일부가 올라갔을 수 있다).
+            // 같은 폴더로 올리는 전송이 남아 있으면 마지막 것이 끝날 때 한 번만 새로 고친다.
+            if let path, RemotePath.parent(of: transfer.remotePath) == path,
+               !transfers.contains(where: { $0.direction == .upload && $0.isActive && RemotePath.parent(of: $0.remotePath) == path }) {
                 Task { await navigate(to: path, recordHistory: false) }
             }
         default:

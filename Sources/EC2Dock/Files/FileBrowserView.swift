@@ -34,7 +34,7 @@ struct FileBrowserView: View {
             pathBar
             Divider()
             content
-            if !model.transfers.isEmpty {
+            if model.hasTransfers {
                 Divider()
                 TransferListView(model: model)
             }
@@ -464,7 +464,8 @@ private struct TransferListView: View {
             .padding(.horizontal, 10)
             .padding(.top, 6)
             ScrollView {
-                VStack(spacing: 6) {
+                // 전송이 수백 개여도 보이는 행만 만든다.
+                LazyVStack(spacing: 6) {
                     ForEach(model.transfers.reversed()) { transfer in
                         TransferRow(model: model, transfer: transfer)
                     }
