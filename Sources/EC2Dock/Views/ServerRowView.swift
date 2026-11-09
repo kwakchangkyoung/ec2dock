@@ -4,6 +4,7 @@ import SwiftUI
 struct ServerRowView: View {
     @Environment(AppState.self) private var state
     @Environment(TerminalSessionStore.self) private var terminals
+    @Environment(ConnectionCoordinator.self) private var connections
     let item: ServerListItem
     var density: ServerListDensity = .comfortable
 
@@ -81,7 +82,12 @@ struct ServerRowView: View {
 
     @ViewBuilder
     private var connectedIndicator: some View {
-        if terminals.sessions(for: item.id).contains(where: \.isRunning) {
+        if connections.connectingIDs.contains(item.id) {
+            ProgressView()
+                .controlSize(.mini)
+                .help("접속하는 중")
+                .accessibilityLabel("접속하는 중")
+        } else if terminals.sessions(for: item.id).contains(where: \.isRunning) {
             Image(systemName: "terminal.fill")
                 .font(.caption)
                 .foregroundStyle(.tint)

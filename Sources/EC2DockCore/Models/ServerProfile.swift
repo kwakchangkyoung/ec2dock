@@ -82,10 +82,16 @@ public struct ServerProfile: Codable, Identifiable, Equatable, Sendable {
         "\(accountID):\(region):\(instanceID)"
     }
 
-    /// Environment 태그를 단어로 나눠 판단한다: "prod", "PRD", "Production-KR", "live" 모두 운영으로 본다.
-    /// 운영 접속 확인을 건너뛰지 않도록 흔한 표기를 넓게 받는다.
+    /// Environment 태그를 단어로 나눠 판단한다: "prod", "PRD", "Production-KR", "live", "production01", "운영계" 모두 운영으로 본다.
+    /// 운영 접속 확인을 건너뛰지 않도록 흔한 표기를 넓게 받는다. 단, "preprod", "product"처럼 다른 뜻의 단어는 제외한다.
     public var isProduction: Bool {
-        !environmentWords.isDisjoint(with: ["production", "prod", "prd", "live", "운영"])
+        environmentWords.contains { word in
+            // "운영계", "운영서버"처럼 한국어는 뒤에 말이 붙는다.
+            word.hasPrefix("운영") || ["production", "prod", "prd", "live"].contains { keyword in
+                // 뒤에 숫자만 붙은 것("prod2", "production01")도 운영으로 본다.
+                word.hasPrefix(keyword) && word.dropFirst(keyword.count).allSatisfy(\.isNumber)
+            }
+        }
     }
 
     public var isDevelopment: Bool {

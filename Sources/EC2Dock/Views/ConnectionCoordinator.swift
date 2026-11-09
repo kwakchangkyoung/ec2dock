@@ -76,6 +76,8 @@ final class ConnectionCoordinator {
 
     /// `terminal`이 nil이면 서버 설정의 터미널로 연다.
     func connect(profileID: String, terminal: TerminalApp?, source: Source) async {
+        // 터미널이 늦게 열려 다시 누르거나 더블클릭이 겹쳐도 한 번만 접속한다.
+        guard !connectingIDs.contains(profileID), pendingConfirmation?.target.profile.id != profileID else { return }
         feedback[profileID] = nil
         do {
             let target = try state.prepareConnection(for: profileID)
@@ -105,6 +107,7 @@ final class ConnectionCoordinator {
     func perform(_ target: ConnectionTarget, confirmed: Bool, terminal: TerminalApp?, source: Source) async {
         let profileID = target.profile.id
         let app = terminal ?? TerminalApp(rawValue: target.settings.terminalIdentifier) ?? .iTerm2
+        guard !connectingIDs.contains(profileID) else { return }
         connectingIDs.insert(profileID)
         defer { connectingIDs.remove(profileID) }
         do {
