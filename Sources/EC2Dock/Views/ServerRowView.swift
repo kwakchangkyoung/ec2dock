@@ -167,9 +167,7 @@ struct EnvironmentTag: View {
             .font(.caption2.weight(.semibold))
             .padding(.horizontal, 6)
             .padding(.vertical, 1)
-            .background(color.opacity(0.15), in: Capsule())
-            .foregroundStyle(color)
+            .background(Color.primary.opacity(isProduction ? 0.10 : 0.06), in: Capsule())
+            .foregroundStyle(isProduction ? Color.primary : Color.secondary)
     }
-
-    private var color: Color { isProduction ? .red : .blue }
 }

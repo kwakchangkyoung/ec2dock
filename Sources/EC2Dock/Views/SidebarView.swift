@@ -4,6 +4,7 @@ import SwiftUI
 struct SidebarView: View {
     @Environment(AppState.self) private var state
     @Binding var selection: SidebarItem?
+    @ViewState private var showsAddAccount = false
 
     var body: some View {
         List(selection: $selection) {
@@ -18,7 +19,7 @@ struct SidebarView: View {
                     .tag(SidebarItem.servers(.development))
             }
 
-            Section("AWS 계정") {
+            Section {
                 ForEach(state.accounts) { account in
                     Label {
                         HStack {
@@ -39,9 +40,25 @@ struct SidebarView: View {
                     .foregroundStyle(account.isScanned || account.isPending ? .primary : .secondary)
                     .tag(SidebarItem.servers(.account(account.accountID)))
                 }
+            } header: {
+                HStack {
+                    Text("AWS 계정")
+                    Spacer()
+                    Button {
+                        showsAddAccount = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("AWS 계정 추가")
+                    .accessibilityLabel("AWS 계정 추가")
+                }
             }
         }
         .listStyle(.sidebar)
+        .sheet(isPresented: $showsAddAccount) {
+            AddAWSAccountView()
+        }
         // 설정은 macOS 표준 설정 창(⌘,)으로 연다.
         .safeAreaInset(edge: .bottom) {
             SettingsLink {

@@ -313,7 +313,7 @@ private struct RefreshStatusBar: View {
                     }
             case .idle, .succeeded:
                 Image(systemName: "clock")
-                Text("마지막 조회\(cacheSuffix)")
+                Text("캐시 IP · \(cacheSuffix)")
             }
             Spacer()
         }
@@ -326,8 +326,8 @@ private struct RefreshStatusBar: View {
     }
 
     private var cacheSuffix: String {
-        guard let date = state.lastFetchedAt else { return ": 없음" }
-        return ": \(date.formatted(.relative(presentation: .named)))"
+        guard let date = state.lastFetchedAt else { return "없음" }
+        return "\(date.formatted(.relative(presentation: .named))) 조회"
     }
 }
 

@@ -223,9 +223,9 @@ struct ServerDetailView: View {
 
     /// 접속에 쓸 IP가 언제 조회된 값인지 알려준다.
     private var cacheFooter: String {
-        let hostKeyNote = "IP가 바뀌었다면 호스트 키 검증(인스턴스 ID 기준)이 접속을 중단합니다. 그때는 \"다시 조회\"를 누르세요."
+        let hostKeyNote = "IP가 바뀌었다면 다시 조회하세요. 인스턴스 ID 기준 호스트 키 검증으로 다른 서버 접속을 차단합니다."
         guard let fetched = item.instance?.lastFetchedAt else { return hostKeyNote }
-        return "접속하면 \(fetched.formatted(.relative(presentation: .named)))에 조회한 IP로 바로 연결합니다. " + hostKeyNote
+        return "SSH는 \(fetched.formatted(.relative(presentation: .named)))에 조회한 IP로 접속합니다. " + hostKeyNote
     }
 
     private var profileSection: some View {
