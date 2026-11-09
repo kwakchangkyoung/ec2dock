@@ -23,9 +23,11 @@ struct ConnectionSettingsView: View {
                     LabeledContent("인스턴스", value: "\(state.accountLabel(for: profile.accountID)) · \(profile.region) · \(profile.instanceID)")
                     TextField("표시 이름", text: $profile.displayName)
                     TextField("환경", text: $profile.environment, prompt: Text("Production / Development"))
+                    environmentHint
                     TextField("그룹", text: $profile.groupName)
                     Picker("접속 방식", selection: $profile.connectionType) {
-                        ForEach(ConnectionType.allCases) { Text($0.displayName).tag($0) }
+                        // SSM은 아직 접속을 지원하지 않는다.
+                        ForEach(ConnectionType.allCases) { Text($0 == .ssm ? "SSM (준비 중)" : $0.displayName).tag($0) }
                     }
                     if profile.connectionType != .ssm {
                         TextField("SSH 사용자명", text: $profile.sshUsername)
@@ -91,6 +93,20 @@ struct ConnectionSettingsView: View {
     }
 
     /// 예: "prod-bastion · 203.0.113.5"
+    /// 입력한 환경 값이 운영으로 판정되는지 바로 보여준다 (운영이면 접속 전에 확인 창이 뜬다).
+    private var environmentHint: some View {
+        let text = if !profile.isProduction {
+            "운영 서버로 인식되지 않습니다. 운영 서버라면 production, prod, 운영 등으로 입력하세요."
+        } else if state.preferences.confirmProductionConnections {
+            "운영 서버로 취급합니다. 접속·파일 열기·명령 복사 전에 한 번 더 확인합니다."
+        } else {
+            "운영 서버로 취급합니다. 설정에서 \"운영 서버 접속 전 확인\"이 꺼져 있어 확인 창은 뜨지 않습니다."
+        }
+        return Label(text, systemImage: profile.isProduction ? "exclamationmark.shield" : "info.circle")
+            .font(.caption)
+            .foregroundStyle(profile.isProduction ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+    }
+
     private func bastionLabel(_ candidate: ServerProfile) -> String {
         guard let ip = state.instances[candidate.id]?.publicIPAddress else { return candidate.displayName }
         return "\(candidate.displayName) · \(ip)"

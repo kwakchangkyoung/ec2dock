@@ -93,7 +93,7 @@ extension ConnectionError: LocalizedError {
         case .instanceNotFound: "인스턴스가 종료되었는지, 계정과 리전 설정이 맞는지 확인하세요."
         case .noCachedInstance: "\"다시 조회\" 또는 목록의 새로고침으로 AWS에서 정보를 가져오세요. IP·상태는 iCloud로 동기화되지 않습니다."
         case .instanceNotRunning: "인스턴스를 시작한 뒤 \"다시 조회\"로 상태를 갱신하세요."
-        case .noPublicIP: "접속 설정에서 Bastion SSH 또는 SSM 방식으로 변경하세요."
+        case .noPublicIP: "접속 설정에서 Bastion SSH 방식으로 변경하세요."
         case .noPrivateIP: "인스턴스의 네트워크 구성을 확인하세요."
         case .bastionNotConfigured: "접속 설정에서 Bastion 프로필을 선택하세요."
         case .bastionNotFound: "접속 설정에서 같은 계정의 Bastion 서버를 다시 선택하세요."

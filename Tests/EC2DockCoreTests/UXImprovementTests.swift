@@ -140,12 +140,13 @@ struct EnvironmentMatchingTests {
     }
 
     /// 운영 접속 확인을 건너뛰지 않도록 흔한 운영 표기를 모두 운영으로 본다.
-    @Test(arguments: ["production", "Production", "prod", "PRD", "Production-KR", "kr_prod", "live", "운영"])
+    @Test(arguments: ["production", "Production", "prod", "PRD", "Production-KR", "kr_prod", "live", "운영",
+                      "production01", "prod2", "PRD-01", "운영계", "운영서버", "kr-운영환경"])
     func productionVariants(environment: String) {
         #expect(profile(environment: environment).isProduction)
     }
 
-    @Test(arguments: ["", "staging", "preprod", "development", "dev", "qa", "product-team"])
+    @Test(arguments: ["", "staging", "preprod", "development", "dev", "qa", "product-team", "products", "liveness", "비운영"])
     func nonProduction(environment: String) {
         #expect(!profile(environment: environment).isProduction)
     }
