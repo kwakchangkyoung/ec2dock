@@ -12,6 +12,8 @@ struct DashboardView: View {
     @ViewState private var pendingDeleteID: String?
     /// 시작 안내 화면에서 연다. 로그인 중 서버가 생겨 안내 화면이 사라져도 시트가 닫히지 않도록 목록 화면이 띄운다.
     @ViewState private var showsAddAccount = false
+    /// 닫은 조회 실패 배너. 다음 새로고침에서 다시 실패하면 다시 보여준다.
+    @ViewState private var dismissedFailures: [RefreshFailure]?
 
     var body: some View {
         let preferences = state.preferences
@@ -45,12 +47,16 @@ struct DashboardView: View {
                 emptyState
             }
         }
-        .searchable(text: $searchText, placement: .toolbar, prompt: "이름, 인스턴스 ID, IP, 태그 검색")
-        .searchScopes($searchScope) {
-            ForEach(SearchScope.allCases) { Text($0.displayName).tag($0) }
-        }
-        .safeAreaInset(edge: .top) {
-            ListHeaderBar(stateFilter: $stateFilter, count: items.count)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            VStack(spacing: 0) {
+                // 검색과 새로고침은 목록 바로 위에 둔다: 창 툴바 오른쪽은 상세 화면 위라 목록과 이어져 보이지 않는다.
+                ListSearchBar(text: $searchText, scope: $searchScope)
+                ListHeaderBar(stateFilter: $stateFilter, count: items.count)
+                // 조회 실패는 목록 맨 위에 해결 버튼과 함께 보여준다 (하단 상태줄은 눈에 잘 띄지 않는다).
+                if case .failed(let failures) = state.refreshStatus, failures != dismissedFailures {
+                    RefreshFailureBanner(failures: failures) { dismissedFailures = failures }
+                }
+            }
         }
         .safeAreaInset(edge: .bottom) {
             RefreshStatusBar()
@@ -58,14 +64,6 @@ struct DashboardView: View {
         .toolbar {
             ToolbarItemGroup {
                 StatusIndicators()
-                Button {
-                    Task { await state.refresh() }
-                } label: {
-                    Label("새로고침", systemImage: "arrow.clockwise")
-                }
-                .help("AWS에서 인스턴스 정보를 다시 조회합니다 (⌘R)")
-                .keyboardShortcut("r", modifiers: .command)
-                .disabled(state.isRefreshing)
             }
         }
         .navigationTitle(title)
@@ -160,6 +158,83 @@ struct DashboardView: View {
     }
 }
 
+// MARK: - 검색줄 (검색 범위 · 검색어 · 새로고침)
+
+private struct ListSearchBar: View {
+    @Environment(AppState.self) private var state
+    @Binding var text: String
+    @Binding var scope: SearchScope
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 4) {
+                Menu {
+                    Picker("검색 범위", selection: $scope) {
+                        ForEach(SearchScope.allCases) { Text($0.displayName).tag($0) }
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    HStack(spacing: 2) {
+                        Image(systemName: "magnifyingglass")
+                        if scope != .all {
+                            Text(scope.displayName).font(.caption)
+                        }
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("검색 범위: \(scope.displayName)")
+                .accessibilityLabel("검색 범위 (\(scope.displayName))")
+                TextField("서버 검색", text: $text,
+                          prompt: Text(scope == .all ? "이름, 인스턴스 ID, IP, 태그 검색" : "\(scope.displayName) 검색"))
+                    .textFieldStyle(.plain)
+                    .focused($isFocused)
+                    .onExitCommand { text = "" }
+                if !text.isEmpty {
+                    Button {
+                        text = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .help("검색어 지우기")
+                    .accessibilityLabel("검색어 지우기")
+                }
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+            .overlay {
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(isFocused ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: isFocused ? 2 : 1)
+            }
+            Button {
+                Task { await state.refresh() }
+            } label: {
+                // 조회 중에는 도는 표시로 바꿔, 누른 결과가 진행 중임을 보여준다.
+                Group {
+                    if state.isRefreshing {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+                .frame(width: 16, height: 16)
+            }
+            .help("AWS에서 인스턴스 정보를 다시 조회합니다 (⌘R)")
+            .keyboardShortcut("r", modifiers: .command)
+            .disabled(state.isRefreshing)
+            .accessibilityLabel("새로고침")
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 2)
+        .background(.bar)
+    }
+}
+
 // MARK: - 목록 머리줄 (상태 필터 · 보기 옵션 · 개수)
 
 private struct ListHeaderBar: View {
@@ -236,11 +311,6 @@ private struct RefreshStatusBar: View {
                             .environment(state)
                             .environment(terminals)
                     }
-                // 로그인으로 해결되는 실패가 있으면 바로 로그인할 수 있게 한다.
-                if let loginProfile = failures.compactMap(\.loginProfile).first {
-                    AWSLoginButton(awsProfile: loginProfile) { await state.refresh() }
-                        .buttonStyle(.link)
-                }
             case .idle, .succeeded:
                 Image(systemName: "clock")
                 Text("마지막 조회\(cacheSuffix)")
@@ -258,6 +328,81 @@ private struct RefreshStatusBar: View {
     private var cacheSuffix: String {
         guard let date = state.lastFetchedAt else { return ": 없음" }
         return ": \(date.formatted(.relative(presentation: .named)))"
+    }
+}
+
+// MARK: - 조회 실패 배너
+
+/// 무엇이 왜 실패했는지와 해결 버튼(AWS 로그인 또는 다시 시도)을 목록 위에 보여준다.
+private struct RefreshFailureBanner: View {
+    @Environment(AppState.self) private var state
+    @Environment(TerminalSessionStore.self) private var terminals
+    let failures: [RefreshFailure]
+    let dismiss: () -> Void
+    @ViewState private var showsDetails = false
+
+    var body: some View {
+        let loginProfiles = failures.compactMap(\.loginProfile).reduce(into: [String]()) { result, profile in
+            if !result.contains(profile) { result.append(profile) }
+        }
+        // 목록 칸이 좁아도 잘리지 않도록 설명과 버튼을 위아래로 둔다.
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.title3)
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(failures.count)곳을 조회하지 못했습니다")
+                        .font(.callout.weight(.semibold))
+                    Text(summary(loginProfiles: loginProfiles))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                }
+                HStack(spacing: 8) {
+                    // 로그인으로 해결되면 로그인을, 아니면 다시 시도를 주 버튼으로 둔다.
+                    // 로그인할 프로필이 여럿이면 하나씩 로그인한다 (다시 조회한 뒤 남은 프로필이 다시 표시된다).
+                    if let loginProfile = loginProfiles.first {
+                        AWSLoginButton(awsProfile: loginProfile) { await state.refresh() }
+                            .buttonStyle(.borderedProminent)
+                    } else {
+                        Button("다시 시도") { Task { await state.refresh() } }
+                            .buttonStyle(.borderedProminent)
+                    }
+                    Button("자세히") { showsDetails = true }
+                        .popover(isPresented: $showsDetails, arrowEdge: .bottom) {
+                            RefreshFailureList(failures: failures) { showsDetails = false }
+                                .environment(state)
+                                .environment(terminals)
+                        }
+                }
+            }
+            Spacer(minLength: 0)
+            Button(action: dismiss) {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help("닫기 (아래 상태줄의 \"자세히\"로 다시 볼 수 있습니다)")
+            .accessibilityLabel("조회 실패 알림 닫기")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.12))
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private func summary(loginProfiles: [String]) -> String {
+        let cacheNote = "목록의 IP와 상태는 마지막으로 조회한 값입니다."
+        if loginProfiles.count == 1, failures.allSatisfy({ $0.loginProfile != nil }) {
+            return "'\(loginProfiles[0])' 프로필의 AWS 로그인이 필요합니다. 로그인하면 바로 다시 조회합니다."
+        }
+        if !loginProfiles.isEmpty {
+            return "AWS 로그인이 필요한 프로필이 있습니다: \(loginProfiles.joined(separator: ", ")). \(cacheNote)"
+        }
+        let first = failures.first.map { failures.count > 1 ? "\($0.source): \($0.message) 외 \(failures.count - 1)곳" : $0.message } ?? ""
+        return "\(first) \(cacheNote)"
     }
 }
 
