@@ -98,6 +98,22 @@ struct AppStateTests {
         #expect(peak <= AppState.maxConcurrentRegionFetches)
     }
 
+    /// 계정 확인(sts)은 프로필마다 기다리지 않고 동시에 실행한다. 실패 순서는 프로필 순서를 따른다.
+    @Test func refreshChecksAccountsConcurrently() async {
+        let slowAWS = MockAWSDiscoveryService(accounts: SampleData.awsProfiles, instances: [], latency: .milliseconds(20))
+        var preferences = SampleData.preferences
+        preferences.enabledAWSProfiles = ["acme-dev", "acme-prod", "gone-a", "gone-b"]
+        let state = AppState(profiles: [], cachedInstances: [], preferences: preferences, aws: slowAWS,
+                             connectionService: connection, syncService: MockSyncService(), now: { fixedDate })
+        await state.refresh()
+        #expect(await slowAWS.maxConcurrentIdentityCalls == 2)
+        guard case .failed(let failures) = state.refreshStatus else {
+            Issue.record("목록에 없는 프로필은 실패로 남아야 합니다")
+            return
+        }
+        #expect(failures.map(\.source) == ["gone-a", "gone-b"])
+    }
+
     /// 삭제한 서버는 새로고침으로 되살아나지 않고, 복원하면 다시 나타난다.
     @Test func deletedProfileIsNotRediscoveredUntilRestored() async {
         state.deleteProfile(id: prodWebID)

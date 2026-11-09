@@ -248,27 +248,42 @@ public final class AppState {
         var failures: [RefreshFailure] = []
         var validProfiles: [(profile: String, accountID: String)] = []
 
-        for awsProfile in preferences.profilesToScan {
-            guard availableAWSProfiles.contains(awsProfile) else {
-                failures.append(RefreshFailure(source: awsProfile, error: AWSDiscoveryError.profileNotFound(awsProfile)))
-                continue
+        let awsService = aws
+        // 계정 확인은 프로필마다 1~2초 걸리므로 동시에 실행한다 (프로필 수는 많지 않다). 결과는 프로필 순서대로 처리한다.
+        let profilesToScan = preferences.profilesToScan
+        let availableProfiles = availableAWSProfiles
+        let identities: [Result<AWSCallerIdentity, any Error>] = await withTaskGroup(of: (Int, Result<AWSCallerIdentity, any Error>).self) { group in
+            for (index, awsProfile) in profilesToScan.enumerated() {
+                group.addTask {
+                    guard availableProfiles.contains(awsProfile) else {
+                        return (index, .failure(AWSDiscoveryError.profileNotFound(awsProfile)))
+                    }
+                    do {
+                        return (index, .success(try await awsService.callerIdentity(profile: awsProfile)))
+                    } catch {
+                        return (index, .failure(error))
+                    }
+                }
             }
-            let identity: AWSCallerIdentity
-            do {
-                identity = try await aws.callerIdentity(profile: awsProfile)
-            } catch is CancellationError {
+            var collected: [(Int, Result<AWSCallerIdentity, any Error>)] = []
+            for await result in group { collected.append(result) }
+            return collected.sorted { $0.0 < $1.0 }.map(\.1)
+        }
+
+        for (awsProfile, result) in zip(profilesToScan, identities) {
+            switch result {
+            case .success(let identity):
+                accountProfiles[identity.accountID] = awsProfile
+                validProfiles.append((profile: awsProfile, accountID: identity.accountID))
+            case .failure(is CancellationError):
                 refreshStatus = .idle
                 return
-            } catch {
+            case .failure(let error):
                 failures.append(RefreshFailure(source: awsProfile, error: error))
-                continue
             }
-            accountProfiles[identity.accountID] = awsProfile
-            validProfiles.append((profile: awsProfile, accountID: identity.accountID))
         }
 
         let regions = preferences.regions
-        let awsService = aws
 
         struct RegionFetchResult: Sendable {
             let order: Int
