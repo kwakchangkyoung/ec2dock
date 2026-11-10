@@ -8,9 +8,14 @@ public struct SyncedProfilesDocument: Codable, Equatable, Sendable {
     /// 삭제 기록. 목록에 없다는 것만으로는 삭제로 보지 않는다(읽기 실패·오래된 파일 버전과 구분할 수 없다).
     public var deletedProfiles: [ProfileTombstone]
 
-    public init(schemaVersion: Int = ServerProfile.currentSchemaVersion, profiles: [ServerProfile],
+    public init(schemaVersion: Int? = nil, profiles: [ServerProfile],
                 deletedProfiles: [ProfileTombstone] = []) {
-        self.schemaVersion = schemaVersion
+        if let schemaVersion {
+            self.schemaVersion = schemaVersion
+        } else {
+            let hasManual = profiles.contains(where: \.isManual) || deletedProfiles.contains { $0.profile.isManual }
+            self.schemaVersion = hasManual ? 2 : 1
+        }
         self.profiles = profiles
         self.deletedProfiles = deletedProfiles
     }

@@ -3,14 +3,14 @@ import Foundation
 /// 사전 검증을 마친 접속 대상 (캐시된 인스턴스 정보 기준).
 public struct ConnectionTarget: Equatable, Sendable {
     public let profile: ServerProfile
-    public let instance: EC2Instance
-    /// Direct SSH: 공인 IP, Bastion SSH: 사설 IP, SSM: nil (인스턴스 ID로 접속)
+    public let instance: EC2Instance?
+    /// Direct SSH: 공인 IP, Bastion SSH: 사설 IP, SSM: nil (인스턴스 ID로 접속), 수동 서버: host
     public let address: String?
     public let settings: LocalConnectionSettings
     /// Bastion SSH일 때 경유할 서버
     public let bastion: BastionHop?
 
-    init(profile: ServerProfile, instance: EC2Instance, address: String?, settings: LocalConnectionSettings, bastion: BastionHop? = nil) {
+    public init(profile: ServerProfile, instance: EC2Instance?, address: String?, settings: LocalConnectionSettings, bastion: BastionHop? = nil) {
         self.profile = profile
         self.instance = instance
         self.address = address
@@ -22,10 +22,17 @@ public struct ConnectionTarget: Equatable, Sendable {
 /// 검증을 마친 Bastion 구간. 사용자명·포트·키는 Bastion 서버 자신의 설정을 쓴다 (설계서 8.2).
 public struct BastionHop: Equatable, Sendable {
     public let profile: ServerProfile
-    public let instance: EC2Instance
-    /// Bastion 공인 IP
+    public let instance: EC2Instance?
+    /// Bastion 공인 IP 또는 수동 서버 호스트
     public let address: String
     public let settings: LocalConnectionSettings
+
+    public init(profile: ServerProfile, instance: EC2Instance?, address: String, settings: LocalConnectionSettings) {
+        self.profile = profile
+        self.instance = instance
+        self.address = address
+        self.settings = settings
+    }
 }
 
 /// 사전 검증에 넘기는 Bastion 서버 정보 (캐시 기준)
@@ -130,8 +137,24 @@ public enum ConnectionPreflight {
         settings: LocalConnectionSettings,
         bastion: BastionInput? = nil
     ) throws(ConnectionError) -> ConnectionTarget {
-        let issues = InputValidator.validate(profile) + InputValidator.validate(settings)
+        let issues = InputValidator.validate(profile) + InputValidator.validate(settings, requiresAWSProfile: !profile.isManual)
         guard issues.isEmpty else { throw .invalidConfiguration(issues.map(\.message)) }
+
+        if profile.isManual {
+            guard let host = profile.host, !host.isEmpty, InputValidator.isValidHost(host) else {
+                throw .invalidConfiguration(["호스트를 입력하세요."])
+            }
+            switch profile.connectionType {
+            case .directSSH:
+                return ConnectionTarget(profile: profile, instance: nil, address: host, settings: settings)
+            case .bastionSSH:
+                guard profile.bastionProfileID != nil else { throw .bastionNotConfigured }
+                let hop = try bastionHop(for: profile, bastion: bastion)
+                return ConnectionTarget(profile: profile, instance: nil, address: host, settings: settings, bastion: hop)
+            case .ssm:
+                throw .unsupportedConnectionType(.ssm)
+            }
+        }
 
         guard let instance else { throw .instanceNotFound }
         guard instance.isRunning else { throw .instanceNotRunning(state: instance.state) }
@@ -150,12 +173,28 @@ public enum ConnectionPreflight {
         }
     }
 
-    /// Bastion은 같은 계정의 다른 서버여야 하고, 실행 중이며 공인 IP가 있어야 한다.
+    /// Bastion 규칙:
+    /// - AWS 대상: 같은 계정의 다른 AWS 서버(공인 IP 필요) 또는 임의의 직접 추가 서버
+    /// - 수동 추가 대상: 임의의 직접 추가 서버
+    /// - 자기 자신은 제외
     private static func bastionHop(for profile: ServerProfile, bastion: BastionInput?) throws(ConnectionError) -> BastionHop {
         guard let bastion, bastion.profile.id == profile.bastionProfileID,
-              bastion.profile.id != profile.id, bastion.profile.accountID == profile.accountID else {
+              bastion.profile.id != profile.id else {
             throw .bastionNotFound
         }
+
+        if profile.isManual {
+            guard bastion.profile.isManual else {
+                throw .bastionNotFound
+            }
+        } else {
+            if !bastion.profile.isManual {
+                guard bastion.profile.accountID == profile.accountID else {
+                    throw .bastionNotFound
+                }
+            }
+        }
+
         var messages: [String] = []
         if !InputValidator.isValidSSHUsername(bastion.profile.sshUsername) {
             messages.append("Bastion 서버의 SSH 사용자명 형식이 올바르지 않습니다.")
@@ -163,13 +202,20 @@ public enum ConnectionPreflight {
         if !InputValidator.isValidPort(bastion.profile.sshPort) {
             messages.append("Bastion 서버의 SSH 포트가 올바르지 않습니다.")
         }
-        messages += InputValidator.validate(bastion.settings).map { "Bastion 서버: \($0.message)" }
+        messages += InputValidator.validate(bastion.settings, requiresAWSProfile: !bastion.profile.isManual).map { "Bastion 서버: \($0.message)" }
         guard messages.isEmpty else { throw .invalidConfiguration(messages) }
 
-        guard let instance = bastion.instance else { throw .bastionNotRunning(state: "조회 정보 없음") }
-        guard instance.isRunning else { throw .bastionNotRunning(state: instance.state) }
-        guard let ip = instance.publicIPAddress, InputValidator.isValidIPAddress(ip) else { throw .bastionNoPublicIP }
-        return BastionHop(profile: bastion.profile, instance: instance, address: ip, settings: bastion.settings)
+        if bastion.profile.isManual {
+            guard let host = bastion.profile.host, !host.isEmpty, InputValidator.isValidHost(host) else {
+                throw .bastionNoPublicIP
+            }
+            return BastionHop(profile: bastion.profile, instance: nil, address: host, settings: bastion.settings)
+        } else {
+            guard let instance = bastion.instance else { throw .bastionNotRunning(state: "조회 정보 없음") }
+            guard instance.isRunning else { throw .bastionNotRunning(state: instance.state) }
+            guard let ip = instance.publicIPAddress, InputValidator.isValidIPAddress(ip) else { throw .bastionNoPublicIP }
+            return BastionHop(profile: bastion.profile, instance: instance, address: ip, settings: bastion.settings)
+        }
     }
 }
 

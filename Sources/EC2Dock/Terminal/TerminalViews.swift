@@ -646,14 +646,24 @@ extension View {
             Button(confirmLabel, role: .destructive) { onConfirm(target) }
             Button("취소", role: .cancel) {}
         } message: { target in
-            Text("""
-            서버: \(target.profile.displayName)
-            환경: \(target.profile.environment)
-            계정: \(accountLabel(target.profile.accountID)) (\(target.profile.accountID))
-            리전: \(target.profile.region)
-            인스턴스: \(target.profile.instanceID)
-            접속 주소: \(target.address ?? "-") (\(target.instance.lastFetchedAt.formatted(.relative(presentation: .named))) 조회)
-            """)
+            if target.profile.isManual {
+                Text("""
+                서버: \(target.profile.displayName)
+                환경: \(target.profile.environment)
+                호스트: \(target.profile.host ?? target.address ?? "-")
+                접속 주소: \(target.address ?? "-")
+                """)
+            } else {
+                let fetchedInfo = target.instance.map { " (\($0.lastFetchedAt.formatted(.relative(presentation: .named))) 조회)" } ?? ""
+                Text("""
+                서버: \(target.profile.displayName)
+                환경: \(target.profile.environment)
+                계정: \(accountLabel(target.profile.accountID)) (\(target.profile.accountID))
+                리전: \(target.profile.region)
+                인스턴스: \(target.profile.instanceID)
+                접속 주소: \(target.address ?? "-")\(fetchedInfo)
+                """)
+            }
         }
     }
 }

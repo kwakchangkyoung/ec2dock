@@ -68,7 +68,7 @@ private struct GeneralSettingsTab: View {
                             Button("복원") { state.restoreDeletedProfile(id: tombstone.id) }
                         } label: {
                             Text(tombstone.profile.displayName)
-                            Text("\(tombstone.profile.instanceID) · \(tombstone.deletedAt.formatted(date: .abbreviated, time: .shortened)) 삭제")
+                            Text("\((tombstone.profile.isManual ? tombstone.profile.host : tombstone.profile.instanceID) ?? tombstone.profile.instanceID) · \(tombstone.deletedAt.formatted(date: .abbreviated, time: .shortened)) 삭제")
                         }
                     }
                 } header: {

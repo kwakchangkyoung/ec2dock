@@ -19,7 +19,9 @@ struct ServerDetailView: View {
         Form {
             header
             connectSection
-            awsSection
+            if !profile.isManual {
+                awsSection
+            }
             profileSection
             localSection
         }
@@ -223,6 +225,9 @@ struct ServerDetailView: View {
 
     /// 접속에 쓸 IP가 언제 조회된 값인지 알려준다.
     private var cacheFooter: String {
+        if profile.isManual {
+            return "호스트: \(profile.host ?? "-")"
+        }
         let hostKeyNote = "IP가 바뀌었다면 다시 조회하세요. 인스턴스 ID 기준 호스트 키 검증으로 다른 서버 접속을 차단합니다."
         guard let fetched = item.instance?.lastFetchedAt else { return hostKeyNote }
         return "SSH는 \(fetched.formatted(.relative(presentation: .named)))에 조회한 IP로 접속합니다. " + hostKeyNote
@@ -231,8 +236,12 @@ struct ServerDetailView: View {
     private var profileSection: some View {
         Section {
             LabeledContent("표시 이름", value: profile.displayName)
-            LabeledContent("계정", value: "\(state.accountLabel(for: profile.accountID)) (\(profile.accountID))")
-            LabeledContent("리전", value: profile.region)
+            if profile.isManual {
+                copyableRow("호스트", profile.host)
+            } else {
+                LabeledContent("계정", value: "\(state.accountLabel(for: profile.accountID)) (\(profile.accountID))")
+                LabeledContent("리전", value: profile.region)
+            }
             LabeledContent("환경", value: profile.environment.isEmpty ? "-" : profile.environment)
             LabeledContent("그룹", value: profile.groupName.isEmpty ? "-" : profile.groupName)
             LabeledContent("접속 방식", value: profile.connectionType.displayName)
@@ -251,7 +260,9 @@ struct ServerDetailView: View {
     private var localSection: some View {
         let settings = state.localSettings(for: profile.id)
         return Section {
-            LabeledContent("AWS CLI 프로필", value: settings.awsCLIProfileName)
+            if !profile.isManual {
+                LabeledContent("AWS CLI 프로필", value: settings.awsCLIProfileName)
+            }
             LabeledContent("SSH 키 경로", value: settings.sshKeyPath ?? "지정 안 됨 (ssh 기본값)")
             LabeledContent("터미널", value: TerminalApp(rawValue: settings.terminalIdentifier)?.displayName ?? settings.terminalIdentifier)
             LabeledContent("연결 타임아웃", value: "\(settings.connectTimeoutSeconds)초")
@@ -278,6 +289,9 @@ struct ServerDetailView: View {
     /// 예: "prod-bastion (203.0.113.5)"
     private var bastionName: String? {
         guard let id = profile.bastionProfileID, let bastion = state.profile(id: id) else { return nil }
+        if bastion.isManual {
+            return "\(bastion.displayName) (\(bastion.host ?? "-"))"
+        }
         guard let ip = state.instances[id]?.publicIPAddress else { return bastion.displayName }
         return "\(bastion.displayName) (\(ip))"
     }

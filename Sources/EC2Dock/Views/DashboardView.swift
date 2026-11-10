@@ -113,15 +113,23 @@ struct DashboardView: View {
         .disabled(blocked)
         Divider()
         Button("접속 설정…") { connections.editingProfileID = id }
-        Button("다시 조회") { Task { await connections.refreshInstance(profileID: id) } }
+        if !item.profile.isManual {
+            Button("다시 조회") { Task { await connections.refreshInstance(profileID: id) } }
+        }
         Divider()
-        if let ip = item.instance?.publicIPAddress {
-            Button("공인 IP 복사 (\(ip))") { ConnectionCoordinator.copy(ip) }
+        if item.profile.isManual {
+            if let host = item.profile.host {
+                Button("호스트 복사 (\(host))") { ConnectionCoordinator.copy(host) }
+            }
+        } else {
+            if let ip = item.instance?.publicIPAddress {
+                Button("공인 IP 복사 (\(ip))") { ConnectionCoordinator.copy(ip) }
+            }
+            if let ip = item.instance?.privateIPAddress {
+                Button("사설 IP 복사 (\(ip))") { ConnectionCoordinator.copy(ip) }
+            }
+            Button("인스턴스 ID 복사") { ConnectionCoordinator.copy(item.profile.instanceID) }
         }
-        if let ip = item.instance?.privateIPAddress {
-            Button("사설 IP 복사 (\(ip))") { ConnectionCoordinator.copy(ip) }
-        }
-        Button("인스턴스 ID 복사") { ConnectionCoordinator.copy(item.profile.instanceID) }
         Button("SSH 명령 복사") { connections.copyCommand(profileID: id, source: .list) }
             .disabled(blocked)
         Divider()
@@ -153,6 +161,7 @@ struct DashboardView: View {
         case .favorites: "즐겨찾기"
         case .production: "운영 서버"
         case .development: "개발 서버"
+        case .manual: "직접 추가한 서버"
         case .account(let accountID): state.accounts.first { $0.accountID == accountID }?.alias ?? accountID
         }
     }

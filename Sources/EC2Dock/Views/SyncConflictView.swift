@@ -38,9 +38,15 @@ struct SyncConflictView: View {
     private func conflictRow(_ conflict: SyncConflict) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(conflict.local.displayName).font(.headline)
-            Text("\(conflict.local.accountAlias) · \(conflict.local.region) · \(conflict.local.instanceID)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if conflict.local.isManual {
+                Text(conflict.local.host ?? "직접 추가한 서버")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("\(conflict.local.accountAlias) · \(conflict.local.region) · \(conflict.local.instanceID)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
                 GridRow {

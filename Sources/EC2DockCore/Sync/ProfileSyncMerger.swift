@@ -32,7 +32,7 @@ public struct SyncConflict: Identifiable, Equatable, Sendable {
     /// 화면에 보여줄 값이 다른 항목
     public var differences: [FieldDifference] {
         func describe(_ profile: ServerProfile) -> [(String, String)] {
-            [
+            var fields = [
                 ("표시 이름", profile.displayName),
                 ("계정 별칭", profile.accountAlias),
                 ("환경", profile.environment),
@@ -43,6 +43,10 @@ public struct SyncConflict: Identifiable, Equatable, Sendable {
                 ("SSH 포트", String(profile.sshPort)),
                 ("Bastion", profile.bastionProfileID ?? "-"),
             ]
+            if local.isManual || remote.isManual {
+                fields.append(("호스트", profile.host ?? "-"))
+            }
+            return fields
         }
         return zip(describe(local), describe(remote)).compactMap { lhs, rhs in
             lhs.1 == rhs.1 ? nil : FieldDifference(label: lhs.0, local: lhs.1, remote: rhs.1)

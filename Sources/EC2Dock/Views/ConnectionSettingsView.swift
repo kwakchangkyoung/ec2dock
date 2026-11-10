@@ -20,14 +20,26 @@ struct ConnectionSettingsView: View {
         VStack(spacing: 0) {
             Form {
                 Section("서버 프로필 (iCloud 동기화 대상)") {
-                    LabeledContent("인스턴스", value: "\(state.accountLabel(for: profile.accountID)) · \(profile.region) · \(profile.instanceID)")
+                    if profile.isManual {
+                        TextField("호스트", text: Binding(
+                            get: { profile.host ?? "" },
+                            set: { profile.host = $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        ), prompt: Text("예: 192.168.1.100 또는 server.example.com"))
+                    } else {
+                        LabeledContent("인스턴스", value: "\(state.accountLabel(for: profile.accountID)) · \(profile.region) · \(profile.instanceID)")
+                    }
                     TextField("표시 이름", text: $profile.displayName)
                     TextField("환경", text: $profile.environment, prompt: Text("Production / Development"))
                     environmentHint
                     TextField("그룹", text: $profile.groupName)
                     Picker("접속 방식", selection: $profile.connectionType) {
-                        // SSM은 아직 접속을 지원하지 않는다.
-                        ForEach(ConnectionType.allCases) { Text($0 == .ssm ? "SSM (준비 중)" : $0.displayName).tag($0) }
+                        if profile.isManual {
+                            Text(ConnectionType.directSSH.displayName).tag(ConnectionType.directSSH)
+                            Text(ConnectionType.bastionSSH.displayName).tag(ConnectionType.bastionSSH)
+                        } else {
+                            // SSM은 아직 접속을 지원하지 않는다.
+                            ForEach(ConnectionType.allCases) { Text($0 == .ssm ? "SSM (준비 중)" : $0.displayName).tag($0) }
+                        }
                     }
                     if profile.connectionType != .ssm {
                         TextField("SSH 사용자명", text: $profile.sshUsername)
@@ -42,16 +54,18 @@ struct ConnectionSettingsView: View {
                             }
                         }
                         Text(candidates.isEmpty
-                             ? "같은 계정·VPC에 공인 IP가 있는 서버가 없습니다. 목록을 새로고침한 뒤 다시 확인하세요."
-                             : "같은 계정·VPC에서 공인 IP가 있는 서버만 표시합니다. Bastion의 사용자명·포트·키는 그 서버의 접속 설정을 사용합니다.")
+                             ? (profile.isManual ? "Bastion으로 사용할 수 있는 직접 추가한 서버가 없습니다." : "같은 계정·VPC에 공인 IP가 있는 서버나 직접 추가한 서버가 없습니다.")
+                             : "Bastion의 사용자명·포트·키는 그 서버의 접속 설정을 사용합니다.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
 
                 Section("이 Mac 전용 설정 (동기화하지 않음)") {
-                    Picker("AWS CLI 프로필", selection: $settings.awsCLIProfileName) {
-                        ForEach(awsProfileOptions, id: \.self) { Text($0).tag($0) }
+                    if !profile.isManual {
+                        Picker("AWS CLI 프로필", selection: $settings.awsCLIProfileName) {
+                            ForEach(awsProfileOptions, id: \.self) { Text($0).tag($0) }
+                        }
                     }
                     HStack {
                         TextField("SSH 키 파일 경로", text: keyPath, prompt: Text("~/.ssh/my-key.pem"))
@@ -108,6 +122,9 @@ struct ConnectionSettingsView: View {
     }
 
     private func bastionLabel(_ candidate: ServerProfile) -> String {
+        if candidate.isManual {
+            return "\(candidate.displayName) · \(candidate.host ?? "-")"
+        }
         guard let ip = state.instances[candidate.id]?.publicIPAddress else { return candidate.displayName }
         return "\(candidate.displayName) · \(ip)"
     }
