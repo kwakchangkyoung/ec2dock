@@ -55,6 +55,8 @@ public enum InputValidator {
         return inet_pton(AF_INET, value, &ipv4) == 1 || inet_pton(AF_INET6, value, &ipv6) == 1
     }
 
+    private static let validHostLabelScalars = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-")
+
     /// IPv4/IPv6 주소이거나 유효한 DNS 호스트 이름인지 확인한다.
     /// 옵션 주입(-로 시작)이나 셸 메타문자, 공백을 차단한다.
     public static func isValidHost(_ value: String) -> Bool {
@@ -66,7 +68,7 @@ public enum InputValidator {
         for label in labels {
             guard !label.isEmpty && label.count <= 63 else { return false }
             guard !label.hasPrefix("-") && !label.hasSuffix("-") else { return false }
-            guard label.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" }) else { return false }
+            guard label.unicodeScalars.allSatisfy({ validHostLabelScalars.contains($0) }) else { return false }
         }
         return true
     }

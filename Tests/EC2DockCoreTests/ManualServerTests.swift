@@ -121,6 +121,12 @@ struct ManualServerTests {
         ".example.com",
         "example.com.",
         "server_name.com",
+        "서버.example.com",
+        "ｅｘａｍｐｌｅ.com",
+        "host²",
+        "a_b.com",
+        "host.",
+        ".host",
         "a" + String(repeating: "b", count: 64) + ".com" // label > 63
     ])
     func invalidAndInjectionHosts(_ host: String) {
