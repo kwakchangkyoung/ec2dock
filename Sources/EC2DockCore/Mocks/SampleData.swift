@@ -30,7 +30,7 @@ public enum SampleData {
         ServerProfile.makeID(accountID: prodAccountID, region: seoul, instanceID: prodBastionID)
     }
 
-    public static func profiles(now: Date = Date()) -> [ServerProfile] {
+    public static func profiles(now: Date = Date(), includeManual: Bool = false) -> [ServerProfile] {
         let created = now.addingTimeInterval(-86_400 * 30)
         func prod(_ region: String, _ id: String, _ name: String) -> ServerProfile {
             ServerProfile(accountID: prodAccountID, accountAlias: "acme-prod", region: region, instanceID: id,
@@ -67,7 +67,26 @@ public enum SampleData {
 
         let legacy = dev(virginia, devLegacyID, "dev-legacy")
 
-        return [web, api, bastion, batch, devWeb, devDB, legacy]
+        var list = [web, api, bastion, batch, devWeb, devDB, legacy]
+        if includeManual {
+            list.append(manualServer(now: created))
+        }
+        return list
+    }
+
+    public static func manualServer(now: Date = Date()) -> ServerProfile {
+        ServerProfile.manual(
+            displayName: "on-prem-gateway",
+            host: "192.168.1.50",
+            environment: "On-Prem",
+            groupName: "on-prem",
+            isFavorite: false,
+            connectionType: .directSSH,
+            sshUsername: "admin",
+            sshPort: 22,
+            now: now,
+            uuid: "00000000-0000-0000-0000-000000000001"
+        )
     }
 
     /// 앱 시작 시 즉시 보여줄 로컬 캐시 (1시간 전 조회 결과)

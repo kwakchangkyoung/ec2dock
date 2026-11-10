@@ -25,21 +25,25 @@ public struct SSHCommandBuilder: Sendable {
         let settings = target.settings
 
         // 사전 검증을 통과했더라도 명령 구성 직전에 한 번 더 확인한다.
-        let issues = InputValidator.validate(profile) + InputValidator.validate(settings)
+        let issues = InputValidator.validate(profile) + InputValidator.validate(settings, requiresAWSProfile: !profile.isManual)
         guard issues.isEmpty else { throw .invalidConfiguration(issues.map(\.message)) }
+
+        let isValidAddress: (String) -> Bool = { addr in
+            profile.isManual ? InputValidator.isValidHost(addr) : InputValidator.isValidIPAddress(addr)
+        }
 
         switch profile.connectionType {
         case .directSSH:
-            guard let host = target.address, InputValidator.isValidIPAddress(host) else { throw .noPublicIP }
+            guard let host = target.address, isValidAddress(host) else { throw .noPublicIP }
             return TerminalCommand(executable: Self.sshPath, arguments: try hopArguments(
-                instanceID: profile.instanceID, username: profile.sshUsername, host: host, port: profile.sshPort,
+                hostKeyAlias: profile.hostKeyAlias, username: profile.sshUsername, host: host, port: profile.sshPort,
                 settings: settings))
 
         case .bastionSSH:
-            guard let host = target.address, InputValidator.isValidIPAddress(host) else { throw .noPrivateIP }
+            guard let host = target.address, isValidAddress(host) else { throw .noPrivateIP }
             let proxyCommand = try bastionProxyCommand(for: target, host: host)
 
-            var arguments = try hopArguments(instanceID: profile.instanceID, username: profile.sshUsername, host: host,
+            var arguments = try hopArguments(hostKeyAlias: profile.hostKeyAlias, username: profile.sshUsername, host: host,
                                              port: profile.sshPort, settings: settings)
             // 대상 구간 옵션 뒤, "--" 앞에 ProxyCommand를 넣는다.
             let separator = arguments.firstIndex(of: "--") ?? arguments.endIndex
@@ -61,25 +65,33 @@ public struct SSHCommandBuilder: Sendable {
                             controlPath: String?) throws(ConnectionError) -> TerminalCommand {
         let profile = target.profile
         let settings = target.settings
-        let issues = InputValidator.validate(profile) + InputValidator.validate(settings)
+        let issues = InputValidator.validate(profile) + InputValidator.validate(settings, requiresAWSProfile: !profile.isManual)
         guard issues.isEmpty else { throw .invalidConfiguration(issues.map(\.message)) }
 
         var options = try keyArguments(settings) + [
             "-o", "ConnectTimeout=\(settings.connectTimeoutSeconds)",
-            "-o", "HostKeyAlias=\(profile.instanceID)",
+        ]
+        if let hostKeyAlias = profile.hostKeyAlias {
+            options += ["-o", "HostKeyAlias=\(hostKeyAlias)"]
+        }
+        options += [
             "-o", "BatchMode=yes",
         ]
         if let controlPath {
             options += ["-o", "ControlMaster=auto", "-o", "ControlPath=\(controlPath)", "-o", "ControlPersist=60"]
         }
 
+        let isValidAddress: (String) -> Bool = { addr in
+            profile.isManual ? InputValidator.isValidHost(addr) : InputValidator.isValidIPAddress(addr)
+        }
+
         let host: String
         switch profile.connectionType {
         case .directSSH:
-            guard let address = target.address, InputValidator.isValidIPAddress(address) else { throw .noPublicIP }
+            guard let address = target.address, isValidAddress(address) else { throw .noPublicIP }
             host = address
         case .bastionSSH:
-            guard let address = target.address, InputValidator.isValidIPAddress(address) else { throw .noPrivateIP }
+            guard let address = target.address, isValidAddress(address) else { throw .noPrivateIP }
             host = address
             options += ["-o", "ProxyCommand=\(try bastionProxyCommand(for: target, host: address))"]
         case .ssm:
@@ -97,9 +109,13 @@ public struct SSHCommandBuilder: Sendable {
     /// 대상 주소를 직접 넣어 %h/%p 토큰 해석에 의존하지 않는다.
     private func bastionProxyCommand(for target: ConnectionTarget, host: String) throws(ConnectionError) -> String {
         guard let bastion = target.bastion else { throw .bastionNotConfigured }
-        guard InputValidator.isValidIPAddress(bastion.address) else { throw .bastionNoPublicIP }
-        guard InputValidator.isValidSSHUsername(bastion.profile.sshUsername), InputValidator.isValidPort(bastion.profile.sshPort),
-              InputValidator.isValidInstanceID(bastion.profile.instanceID), InputValidator.validate(bastion.settings).isEmpty else {
+        let isBastionManual = bastion.profile.isManual
+        let isAddressValid = isBastionManual ? InputValidator.isValidHost(bastion.address) : InputValidator.isValidIPAddress(bastion.address)
+        guard isAddressValid else { throw .bastionNoPublicIP }
+        guard InputValidator.isValidSSHUsername(bastion.profile.sshUsername),
+              InputValidator.isValidPort(bastion.profile.sshPort),
+              (isBastionManual || InputValidator.isValidInstanceID(bastion.profile.instanceID)),
+              InputValidator.validate(bastion.settings, requiresAWSProfile: !isBastionManual).isEmpty else {
             throw .invalidConfiguration(["Bastion 서버의 접속 설정을 확인하세요."])
         }
         let port = target.profile.sshPort
@@ -107,7 +123,11 @@ public struct SSHCommandBuilder: Sendable {
         var jump = [Self.sshPath] + (try keyArguments(bastion.settings))
         jump += [
             "-o", "ConnectTimeout=\(bastion.settings.connectTimeoutSeconds)",
-            "-o", "HostKeyAlias=\(bastion.profile.instanceID)",
+        ]
+        if let hostKeyAlias = bastion.profile.hostKeyAlias {
+            jump += ["-o", "HostKeyAlias=\(hostKeyAlias)"]
+        }
+        jump += [
             "-p", String(bastion.profile.sshPort),
             "-W", forward,
             "--", "\(bastion.profile.sshUsername)@\(bastion.address)",
@@ -116,15 +136,20 @@ public struct SSHCommandBuilder: Sendable {
     }
 
     /// 한 구간의 ssh 인자: 키, 타임아웃, 인스턴스 ID 기준 호스트 키 검증, 포트, 목적지
-    private func hopArguments(instanceID: String, username: String, host: String, port: Int,
+    private func hopArguments(hostKeyAlias: String?, username: String, host: String, port: Int,
                               settings: LocalConnectionSettings) throws(ConnectionError) -> [String] {
-        try keyArguments(settings) + [
+        var options = try keyArguments(settings) + [
             "-o", "ConnectTimeout=\(settings.connectTimeoutSeconds)",
-            "-o", "HostKeyAlias=\(instanceID)",
+        ]
+        if let hostKeyAlias {
+            options += ["-o", "HostKeyAlias=\(hostKeyAlias)"]
+        }
+        options += [
             "-p", String(port),
             "--",
             "\(username)@\(host)",
         ]
+        return options
     }
 
     private func keyArguments(_ settings: LocalConnectionSettings) throws(ConnectionError) -> [String] {

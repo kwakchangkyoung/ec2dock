@@ -93,7 +93,7 @@ public actor MockConnectionService: ConnectionService {
         if let failure { throw failure }
         requests.append(target)
         terminals.append(terminal)
-        let destination = "\(target.profile.sshUsername)@\(target.address ?? target.instance.instanceID)"
+        let destination = "\(target.profile.sshUsername)@\(target.address ?? target.instance?.instanceID ?? target.profile.instanceID)"
         guard terminal.isExternal else {
             // 샘플 IP로 실제 ssh를 실행하지 않도록 안내 문구만 출력한다.
             let command = TerminalCommand(executable: "/bin/echo", arguments: ["샘플 모드: 실제로 접속하지 않습니다 (\(destination))"])

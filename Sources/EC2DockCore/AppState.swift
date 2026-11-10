@@ -142,7 +142,7 @@ public final class AppState {
     /// 샘플 데이터와 Mock 서비스로 구성한 상태 (Phase 1 기본값)
     public static func sample() -> AppState {
         AppState(
-            profiles: SampleData.profiles(),
+            profiles: SampleData.profiles(includeManual: true),
             cachedInstances: SampleData.cachedInstances(),
             preferences: SampleData.preferences,
             aws: MockAWSDiscoveryService(
@@ -195,7 +195,7 @@ public final class AppState {
     /// 사이드바 "AWS Accounts": 서버가 있는 계정 + 서버가 아직 없는 조회 대상 프로필.
     public var accounts: [AccountSummary] {
         let scanned = Set(preferences.profilesToScan)
-        var result = Dictionary(grouping: profiles, by: \.accountID).map { accountID, servers in
+        var result = Dictionary(grouping: profiles.filter { !$0.isManual }, by: \.accountID).map { accountID, servers in
             let awsProfile = accountProfiles[accountID]
             return AccountSummary(accountID: accountID, alias: accountLabel(for: accountID), serverCount: servers.count,
                                   awsProfile: awsProfile, isScanned: awsProfile.map(scanned.contains) ?? false)
@@ -214,13 +214,24 @@ public final class AppState {
         return result.sorted { $0.alias.localizedStandardCompare($1.alias) == .orderedAscending }
     }
 
-    /// Bastion 후보: 같은 계정의 다른 서버 중 공인 IP가 있는 서버.
-    /// 두 서버의 VPC를 알면 같은 VPC로 좁힌다. 현재 지정된 Bastion은 조건과 관계없이 남긴다.
+    public var accountSummaries: [AccountSummary] { accounts }
+
+    /// Bastion 후보:
+    /// - AWS 대상: 같은 계정의 다른 AWS 서버(공인 IP 필요) 또는 임의의 직접 추가 서버
+    /// - 수동 추가 대상: 임의의 직접 추가 서버
+    /// - 두 서버의 VPC를 알면 같은 VPC로 좁힌다. 현재 지정된 Bastion은 조건과 관계없이 남긴다.
     public func bastionCandidates(for profile: ServerProfile) -> [ServerProfile] {
         let targetVPC = instances[profile.id]?.vpcID
         return profiles.filter { candidate in
-            guard candidate.accountID == profile.accountID, candidate.id != profile.id else { return false }
+            guard candidate.id != profile.id else { return false }
             if candidate.id == profile.bastionProfileID { return true }
+            if profile.isManual {
+                return candidate.isManual
+            }
+            if candidate.isManual {
+                return true
+            }
+            guard candidate.accountID == profile.accountID else { return false }
             guard let instance = instances[candidate.id], instance.publicIPAddress != nil else { return false }
             if let targetVPC, let candidateVPC = instance.vpcID { return targetVPC == candidateVPC }
             return true
@@ -471,14 +482,34 @@ public final class AppState {
         )
     }
 
+    /// 수동으로 추가하는 서버(AWS가 아닌 서버) 등록.
+    /// 로컬 키 경로와 접속 설정을 저장하고 프로필 변경을 반영한다.
+    @discardableResult
+    public func addManualServer(profile: ServerProfile, settings: LocalConnectionSettings) -> [ValidationIssue] {
+        var manualProfile = profile
+        manualProfile.source = .manual
+        var localSettingsValue = settings
+        localSettingsValue.profileID = manualProfile.id
+
+        let issues = InputValidator.validate(manualProfile) + InputValidator.validate(localSettingsValue, requiresAWSProfile: false)
+        guard issues.isEmpty else { return issues }
+
+        manualProfile.updatedAt = now()
+        profiles.append(manualProfile)
+        self.localSettings[manualProfile.id] = localSettingsValue
+        persist(profiles, to: .profiles)
+        persist(Array(self.localSettings.values), to: .localSettings)
+        return []
+    }
+
     /// 검증에 실패하면 변경하지 않고 문제 목록을 반환한다.
-    /// 계정/리전/인스턴스 ID는 식별자이므로 변경할 수 없다.
+    /// 계정/리전/인스턴스 ID는 식별자이므로 변경할 수 없다. 수동 서버는 호스트를 변경할 수 있다.
     @discardableResult
     public func updateConnectionSettings(profile updated: ServerProfile, settings: LocalConnectionSettings) -> [ValidationIssue] {
         guard let index = profiles.firstIndex(where: { $0.id == updated.id }), settings.profileID == updated.id else {
             return [ValidationIssue(field: .instanceID, message: "서버 식별자는 변경할 수 없습니다.")]
         }
-        let issues = InputValidator.validate(updated) + InputValidator.validate(settings)
+        let issues = InputValidator.validate(updated) + InputValidator.validate(settings, requiresAWSProfile: !updated.isManual)
         guard issues.isEmpty else { return issues }
 
         var profile = updated
@@ -649,9 +680,10 @@ public final class AppState {
         guard let profile = profile(id: id) else { throw .instanceNotFound }
         let settings = localSettings(for: id)
 
-        let issues = InputValidator.validate(profile) + InputValidator.validate(settings)
+        let issues = InputValidator.validate(profile) + InputValidator.validate(settings, requiresAWSProfile: !profile.isManual)
         guard issues.isEmpty else { throw .invalidConfiguration(issues.map(\.message)) }
-        guard let cached = instances[id] else { throw .noCachedInstance }
+        let cached = instances[id]
+        if !profile.isManual && cached == nil { throw .noCachedInstance }
 
         var bastion: BastionInput?
         if profile.connectionType == .bastionSSH, let bastionID = profile.bastionProfileID,
@@ -673,10 +705,11 @@ public final class AppState {
     }
 
     /// 버튼으로 요청한 서버 한 대 재조회: 계정 확인 후 최신 상태와 IP로 캐시를 갱신한다.
-    /// 인스턴스가 더 이상 없으면 캐시에서 지운다.
+    /// 인스턴스가 더 이상 없으면 캐시에서 지운다. 수동 서버는 조회할 대상이 없으므로 nil을 반환한다.
     @discardableResult
     public func refreshInstance(id: String) async throws(ConnectionError) -> EC2Instance? {
         guard let profile = profile(id: id) else { throw .instanceNotFound }
+        if profile.isManual { return nil }
         let settings = localSettings(for: id)
         guard InputValidator.isValidAWSProfileName(settings.awsCLIProfileName) else {
             throw .invalidConfiguration(["AWS CLI 프로필 이름 형식이 올바르지 않습니다."])

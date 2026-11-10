@@ -34,13 +34,21 @@ struct ServerRowView: View {
                     StateBadge(state: item.stateLabel)
                     connectedIndicator
                 }
-                Text("\(state.accountLabel(for: item.profile.accountID)) · \(item.profile.region)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let addresses {
-                    Text(addresses)
-                        .font(.caption.monospaced())
+                if item.profile.isManual {
+                    if let host = item.profile.host {
+                        Text(host)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("\(state.accountLabel(for: item.profile.accountID)) · \(item.profile.region)")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
+                    if let addresses {
+                        Text(addresses)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 HStack(spacing: 6) {
                     if !item.profile.environment.isEmpty {
@@ -95,7 +103,7 @@ struct ServerRowView: View {
         }
     }
 
-    private var isRunning: Bool { item.instance?.isRunning == true }
+    private var isRunning: Bool { item.profile.isManual || item.instance?.isRunning == true }
 
     /// 예: "공인 203.0.113.25 · 사설 10.0.1.10"
     private var addresses: String? {
@@ -108,9 +116,12 @@ struct ServerRowView: View {
 
     /// 간결 보기에서는 접속 방식에 맞는 주소 하나만 보여준다.
     private var primaryAddress: String? {
+        if item.profile.isManual {
+            return item.profile.host
+        }
         switch item.profile.connectionType {
-        case .directSSH: item.instance?.publicIPAddress ?? item.instance?.privateIPAddress
-        case .bastionSSH, .ssm: item.instance?.privateIPAddress
+        case .directSSH: return item.instance?.publicIPAddress ?? item.instance?.privateIPAddress
+        case .bastionSSH, .ssm: return item.instance?.privateIPAddress
         }
     }
 
@@ -118,7 +129,11 @@ struct ServerRowView: View {
         var parts = [item.profile.displayName, "상태 \(item.stateLabel)"]
         if item.profile.isFavorite { parts.append("즐겨찾기") }
         if !item.profile.environment.isEmpty { parts.append(item.profile.environment) }
-        if let addresses { parts.append(addresses) }
+        if item.profile.isManual {
+            if let host = item.profile.host { parts.append(host) }
+        } else if let addresses {
+            parts.append(addresses)
+        }
         return parts.joined(separator: ", ")
     }
 }
@@ -156,6 +171,7 @@ struct StateBadge: View {
     static func color(for state: String) -> Color {
         switch state {
         case "running": .green
+        case "직접 추가": .blue
         case "pending", "stopping", "shutting-down": .orange
         case "stopped": .gray
         case "terminated": .red

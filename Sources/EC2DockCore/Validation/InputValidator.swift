@@ -3,7 +3,7 @@ import Foundation
 public struct ValidationIssue: Equatable, Sendable {
     public enum Field: String, Sendable {
         case accountID, region, instanceID, displayName, sshUsername, sshPort
-        case bastionProfile, awsCLIProfileName, sshKeyPath, terminal, connectTimeout
+        case bastionProfile, awsCLIProfileName, sshKeyPath, terminal, connectTimeout, host
     }
 
     public let field: Field
@@ -55,8 +55,52 @@ public enum InputValidator {
         return inet_pton(AF_INET, value, &ipv4) == 1 || inet_pton(AF_INET6, value, &ipv6) == 1
     }
 
+    /// IPv4/IPv6 주소이거나 유효한 DNS 호스트 이름인지 확인한다.
+    /// 옵션 주입(-로 시작)이나 셸 메타문자, 공백을 차단한다.
+    public static func isValidHost(_ value: String) -> Bool {
+        if isValidIPAddress(value) { return true }
+        guard !value.isEmpty, value.count <= 253 else { return false }
+        guard !value.hasPrefix("-") else { return false }
+        let labels = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard !labels.isEmpty else { return false }
+        for label in labels {
+            guard !label.isEmpty && label.count <= 63 else { return false }
+            guard !label.hasPrefix("-") && !label.hasSuffix("-") else { return false }
+            guard label.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" }) else { return false }
+        }
+        return true
+    }
+
     public static func validate(_ profile: ServerProfile) -> [ValidationIssue] {
         var issues: [ValidationIssue] = []
+
+        if profile.isManual {
+            if profile.displayName.trimmingCharacters(in: .whitespaces).isEmpty {
+                issues.append(.init(field: .displayName, message: "표시 이름을 입력하세요."))
+            }
+            if let host = profile.host, !host.isEmpty {
+                if !isValidHost(host) {
+                    issues.append(.init(field: .host, message: "올바른 호스트(IP 주소 또는 도메인 이름)를 입력하세요."))
+                }
+            } else {
+                issues.append(.init(field: .host, message: "호스트를 입력하세요."))
+            }
+            if !isValidSSHUsername(profile.sshUsername) {
+                issues.append(.init(field: .sshUsername, message: "SSH 사용자명은 영문자 또는 _로 시작하고 영문, 숫자, . _ - 만 사용할 수 있습니다."))
+            }
+            if !isValidPort(profile.sshPort) {
+                issues.append(.init(field: .sshPort, message: "SSH 포트는 1~65535 사이여야 합니다."))
+            }
+            if profile.connectionType == .bastionSSH {
+                if profile.bastionProfileID == nil {
+                    issues.append(.init(field: .bastionProfile, message: "Bastion SSH 방식에는 Bastion 프로필이 필요합니다."))
+                } else if profile.bastionProfileID == profile.id {
+                    issues.append(.init(field: .bastionProfile, message: "자기 자신을 Bastion으로 지정할 수 없습니다."))
+                }
+            }
+            return issues
+        }
+
         if !isValidAccountID(profile.accountID) {
             issues.append(.init(field: .accountID, message: "AWS 계정 ID는 12자리 숫자여야 합니다."))
         }
@@ -87,9 +131,9 @@ public enum InputValidator {
         return issues
     }
 
-    public static func validate(_ settings: LocalConnectionSettings) -> [ValidationIssue] {
+    public static func validate(_ settings: LocalConnectionSettings, requiresAWSProfile: Bool = true) -> [ValidationIssue] {
         var issues: [ValidationIssue] = []
-        if !isValidAWSProfileName(settings.awsCLIProfileName) {
+        if requiresAWSProfile && !isValidAWSProfileName(settings.awsCLIProfileName) {
             issues.append(.init(field: .awsCLIProfileName, message: "AWS CLI 프로필 이름 형식이 올바르지 않습니다."))
         }
         if let path = settings.sshKeyPath, !isValidSSHKeyPath(path) {

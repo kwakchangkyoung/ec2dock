@@ -32,7 +32,7 @@ public struct LocalConnectionSettings: Codable, Identifiable, Equatable, Sendabl
 
     public init(
         profileID: String,
-        awsCLIProfileName: String,
+        awsCLIProfileName: String = "",
         sshKeyPath: String? = nil,
         terminalIdentifier: String = TerminalApp.iTerm2.rawValue,
         connectTimeoutSeconds: Int = 10

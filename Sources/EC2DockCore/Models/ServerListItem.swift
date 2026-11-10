@@ -12,7 +12,7 @@ public struct ServerListItem: Identifiable, Equatable, Sendable {
     }
 
     public var id: String { profile.id }
-    public var stateLabel: String { instance?.state ?? "unknown" }
+    public var stateLabel: String { profile.isManual ? "직접 추가" : (instance?.state ?? "unknown") }
 }
 
 public enum ServerFilter: Hashable, Sendable {
@@ -20,6 +20,7 @@ public enum ServerFilter: Hashable, Sendable {
     case favorites
     case production
     case development
+    case manual
     case account(String)
 
     public func includes(_ profile: ServerProfile) -> Bool {
@@ -28,7 +29,8 @@ public enum ServerFilter: Hashable, Sendable {
         case .favorites: profile.isFavorite
         case .production: profile.isProduction
         case .development: profile.isDevelopment
-        case .account(let accountID): profile.accountID == accountID
+        case .manual: profile.isManual
+        case .account(let accountID): !profile.isManual && profile.accountID == accountID
         }
     }
 }
@@ -85,14 +87,16 @@ public enum SearchScope: String, CaseIterable, Identifiable, Sendable {
         let instance = item.instance
         let names = [profile.displayName, instance?.name].compactMap { $0 }
         let tags = (instance?.tags ?? [:]).flatMap { [$0.key, $0.value] }
+        let hostFields = [profile.host].compactMap { $0 }
         switch self {
         case .name: return names
         case .instanceID: return [profile.instanceID]
-        case .publicIP: return [instance?.publicIPAddress].compactMap { $0 }
-        case .privateIP: return [instance?.privateIPAddress].compactMap { $0 }
+        case .publicIP: return [instance?.publicIPAddress].compactMap { $0 } + hostFields
+        case .privateIP: return [instance?.privateIPAddress].compactMap { $0 } + hostFields
         case .tag: return tags
         case .all:
             return names + tags + [profile.instanceID, profile.region, profile.accountAlias, profile.groupName, profile.environment]
+                + hostFields
                 + [instance?.publicIPAddress, instance?.privateIPAddress, instance?.instanceType, instance?.availabilityZone]
                     .compactMap { $0 }
         }

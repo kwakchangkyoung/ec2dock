@@ -5,6 +5,7 @@ struct SidebarView: View {
     @Environment(AppState.self) private var state
     @Binding var selection: SidebarItem?
     @ViewState private var showsAddAccount = false
+    @ViewState private var showsAddManualServer = false
 
     var body: some View {
         List(selection: $selection) {
@@ -17,6 +18,10 @@ struct SidebarView: View {
                     .tag(SidebarItem.servers(.production))
                 Label("개발 (Development)", systemImage: "hammer")
                     .tag(SidebarItem.servers(.development))
+                if state.profiles.contains(where: \.isManual) {
+                    Label("직접 추가한 서버", systemImage: "desktopcomputer")
+                        .tag(SidebarItem.servers(.manual))
+                }
             }
 
             Section {
@@ -45,6 +50,15 @@ struct SidebarView: View {
                     Text("AWS 계정")
                     Spacer()
                     Button {
+                        showsAddManualServer = true
+                    } label: {
+                        Image(systemName: "plus.rectangle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("서버 직접 추가")
+                    .accessibilityLabel("서버 직접 추가")
+
+                    Button {
                         showsAddAccount = true
                     } label: {
                         Image(systemName: "plus")
@@ -58,6 +72,9 @@ struct SidebarView: View {
         .listStyle(.sidebar)
         .sheet(isPresented: $showsAddAccount) {
             AddAWSAccountView()
+        }
+        .sheet(isPresented: $showsAddManualServer) {
+            AddManualServerView()
         }
         // 설정은 macOS 표준 설정 창(⌘,)으로 연다.
         .safeAreaInset(edge: .bottom) {
