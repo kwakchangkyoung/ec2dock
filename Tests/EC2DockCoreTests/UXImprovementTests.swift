@@ -78,7 +78,6 @@ struct PreferencesExtensionTests {
         #expect(preferences.listSort == .name)
         #expect(preferences.listDensity == .comfortable)
         #expect(preferences.terminalTheme == .dark)
-        #expect(preferences.autoFocusTerminal)
         #expect(!preferences.iTermOpensNewTab)
     }
 

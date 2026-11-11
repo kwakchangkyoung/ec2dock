@@ -14,50 +14,50 @@ struct ContentView: View {
     @ViewState private var searchText = ""
     @ViewState private var searchScope: SearchScope = .all
     @ViewState private var stateFilter: InstanceStateFilter = .all
+    /// 사이드바 표시 여부 (.all: 보임, .detailOnly: 숨김). 목록은 넓게 보기 상태에 따라 이 화면이 직접 숨긴다.
     @ViewState private var columnVisibility: NavigationSplitViewVisibility = .all
-    /// 넓게 보기를 끌 때 돌아갈 화면 구성 (목록만 접어 둔 상태 등)
+    /// 넓게 보기를 끌 때 돌아갈 사이드바 상태 (사용자가 사이드바를 숨겨 둔 경우 유지한다)
     @ViewState private var visibilityBeforeFocus: NavigationSplitViewVisibility = .all
 
     var body: some View {
+        // 3칸 NavigationSplitView의 .detailOnly는 macOS 27에서 반영되지 않고 모든 칸을 펼친다
+        // (숨긴 사이드바가 다시 나타남). 그래서 사이드바만 분할 보기로 두고, 목록은 직접 숨긴다.
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarView(selection: $sidebarSelection)
                 .navigationSplitViewColumnWidth(min: 180, ideal: 200)
-        } content: {
-            switch sidebarSelection {
-            case .servers(let filter):
-                DashboardView(filter: filter, searchText: $searchText, searchScope: $searchScope,
-                              stateFilter: $stateFilter, selection: $selectedServerID)
-                    .navigationSplitViewColumnWidth(min: 320, ideal: 380)
-            case nil:
-                ContentUnavailableView("항목을 선택하세요", systemImage: "sidebar.left")
-            }
         } detail: {
-            DetailArea(selectedServerID: selectedServerID)
+            HSplitView {
+                if !terminals.isFocusMode {
+                    serverList
+                        .frame(minWidth: 320, idealWidth: 380, maxWidth: 600, maxHeight: .infinity)
+                }
+                DetailArea(selectedServerID: selectedServerID)
+                    .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         // 목록에서 서버를 고르면 그 서버 정보를 보여준다. 열린 터미널 탭은 유지된다.
         .onChange(of: selectedServerID) {
             terminals.activeTabID = nil
         }
-        // 터미널 집중 모드: 터미널 탭을 보는 동안 사이드바와 목록을 접어 터미널을 넓게 쓴다.
-        // 자동으로 접고 펴는 것은 "서버 정보 ↔ 터미널" 사이를 오갈 때만 한다.
-        // 터미널 탭끼리 바꿀 때는 사용자가 정한 지금 상태를 그대로 둔다.
-        .onChange(of: terminals.activeTabID) { oldValue, newValue in
-            guard state.preferences.autoFocusTerminal, (oldValue == nil) != (newValue == nil) else { return }
-            terminals.isFocusMode = newValue != nil
+        // 넓게 보기는 사용자가 버튼(⇧⌘F)으로만 켜고 끈다. 탭을 옮겨도 그대로 유지하고,
+        // 탭이 모두 닫히면 끌 버튼이 없어지므로 끈다.
+        .onChange(of: terminals.tabs.isEmpty) { _, isEmpty in
+            if isEmpty { terminals.isFocusMode = false }
         }
+        // 넓게 보기: 목록(위 HSplitView)과 사이드바를 접는다. 끌 때는 들어가기 전 사이드바 상태로 돌아간다.
         .onChange(of: terminals.isFocusMode) { _, focused in
+            if focused { visibilityBeforeFocus = columnVisibility }
             let target: NavigationSplitViewVisibility = focused ? .detailOnly : visibilityBeforeFocus
             if columnVisibility != target {
                 withAnimation(.easeInOut(duration: 0.2)) { columnVisibility = target }
             }
         }
         .onChange(of: columnVisibility) { _, visibility in
-            // 사용자가 직접 열고 닫은 경우도 집중 모드 상태에 반영한다.
+            // 넓게 보기 중에 사용자가 사이드바를 열면 넓게 보기를 끄고 목록도 다시 보여준다.
             // SwiftUI가 자동 값(.automatic)을 써넣는 경우는 사용자 조작이 아니므로 무시한다.
-            guard visibility != .automatic else { return }
-            if visibility != .detailOnly { visibilityBeforeFocus = visibility }
-            let focused = visibility == .detailOnly
-            if terminals.isFocusMode != focused { terminals.isFocusMode = focused }
+            guard visibility != .automatic, terminals.isFocusMode, visibility != .detailOnly else { return }
+            visibilityBeforeFocus = visibility
+            terminals.isFocusMode = false
         }
         // 창을 닫았다 다시 열면 화면 구성이 처음 값으로 돌아오므로 넓게 보기 상태에 맞춘다.
         .onAppear {
@@ -122,6 +122,17 @@ struct ContentView: View {
             Button("닫기", role: .cancel) {}
         } message: { alert in
             Text(alert.message)
+        }
+    }
+
+    @ViewBuilder
+    private var serverList: some View {
+        switch sidebarSelection {
+        case .servers(let filter):
+            DashboardView(filter: filter, searchText: $searchText, searchScope: $searchScope,
+                          stateFilter: $stateFilter, selection: $selectedServerID)
+        case nil:
+            ContentUnavailableView("항목을 선택하세요", systemImage: "sidebar.left")
         }
     }
 

@@ -216,8 +216,7 @@ private struct TerminalSettingsTab: View {
                     ForEach(TerminalApp.allCases) { Text($0.displayName).tag($0.rawValue) }
                 }
                 Toggle("iTerm2는 열린 창의 새 탭으로 열기", isOn: $state.preferences.iTermOpensNewTab)
-                Toggle("내장 터미널을 볼 때 목록을 접어 넓게 보기", isOn: $state.preferences.autoFocusTerminal)
-                Text("넓게 보기는 언제든 ⇧⌘F로 켜고 끌 수 있습니다.")
+                Text("터미널 넓게 보기는 탭 막대의 넓게 보기 버튼이나 ⇧⌘F로 켜고 끕니다.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
