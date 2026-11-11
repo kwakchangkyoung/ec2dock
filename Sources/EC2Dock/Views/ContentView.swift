@@ -39,12 +39,10 @@ struct ContentView: View {
         .onChange(of: selectedServerID) {
             terminals.activeTabID = nil
         }
-        // 터미널 집중 모드: 터미널 탭을 보는 동안 사이드바와 목록을 접어 터미널을 넓게 쓴다.
-        // 자동으로 접고 펴는 것은 "서버 정보 ↔ 터미널" 사이를 오갈 때만 한다.
-        // 터미널 탭끼리 바꿀 때는 사용자가 정한 지금 상태를 그대로 둔다.
-        .onChange(of: terminals.activeTabID) { oldValue, newValue in
-            guard state.preferences.autoFocusTerminal, (oldValue == nil) != (newValue == nil) else { return }
-            terminals.isFocusMode = newValue != nil
+        // 넓게 보기는 사용자가 버튼(⇧⌘F)으로만 켜고 끈다. 탭을 옮겨도 그대로 유지하고,
+        // 탭이 모두 닫히면 끌 버튼이 없어지므로 끈다.
+        .onChange(of: terminals.tabs.isEmpty) { _, isEmpty in
+            if isEmpty { terminals.isFocusMode = false }
         }
         // 넓게 보기: 목록(위 HSplitView)과 사이드바를 접는다. 끌 때는 들어가기 전 사이드바 상태로 돌아간다.
         .onChange(of: terminals.isFocusMode) { _, focused in

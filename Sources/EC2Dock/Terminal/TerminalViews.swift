@@ -73,7 +73,8 @@ private struct SessionTabBar: View {
                 .padding(.vertical, 5)
             }
 
-            if terminals.activeTab != nil {
+            // 넓게 보기는 서버 정보 탭에서도 유지되므로, 켜져 있으면 끌 수 있게 버튼을 보여준다.
+            if terminals.activeTab != nil || terminals.isFocusMode {
                 Divider().frame(height: 18)
                 HStack(spacing: 2) {
                     if let tab = terminals.activeTerminalTab {

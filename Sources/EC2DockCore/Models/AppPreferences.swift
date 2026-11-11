@@ -46,8 +46,6 @@ public struct AppPreferences: Codable, Equatable, Sendable {
     // 내장 터미널
     public var terminalFontSize: Double
     public var terminalTheme: TerminalTheme
-    /// 터미널 탭을 보는 동안 사이드바와 목록을 자동으로 접는다.
-    public var autoFocusTerminal: Bool
     /// iTerm2로 열 때 열린 창이 있으면 새 탭으로 연다.
     public var iTermOpensNewTab: Bool
 
@@ -68,7 +66,6 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         listGrouping: ServerGrouping = .none,
         terminalFontSize: Double = AppPreferences.defaultTerminalFontSize,
         terminalTheme: TerminalTheme = .dark,
-        autoFocusTerminal: Bool = true,
         iTermOpensNewTab: Bool = false
     ) {
         self.defaultAWSProfile = defaultAWSProfile
@@ -84,7 +81,6 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         self.listGrouping = listGrouping
         self.terminalFontSize = terminalFontSize
         self.terminalTheme = terminalTheme
-        self.autoFocusTerminal = autoFocusTerminal
         self.iTermOpensNewTab = iTermOpensNewTab
     }
 
@@ -105,7 +101,6 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         listGrouping = (try? container.decodeIfPresent(ServerGrouping.self, forKey: .listGrouping)) ?? defaults.listGrouping
         terminalFontSize = try container.decodeIfPresent(Double.self, forKey: .terminalFontSize) ?? defaults.terminalFontSize
         terminalTheme = (try? container.decodeIfPresent(TerminalTheme.self, forKey: .terminalTheme)) ?? defaults.terminalTheme
-        autoFocusTerminal = try container.decodeIfPresent(Bool.self, forKey: .autoFocusTerminal) ?? defaults.autoFocusTerminal
         iTermOpensNewTab = try container.decodeIfPresent(Bool.self, forKey: .iTermOpensNewTab) ?? defaults.iTermOpensNewTab
     }
 
