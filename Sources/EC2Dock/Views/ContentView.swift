@@ -29,10 +29,10 @@ struct ContentView: View {
             HSplitView {
                 if !terminals.isFocusMode {
                     serverList
-                        .frame(minWidth: 320, idealWidth: 380, maxWidth: 600)
+                        .frame(minWidth: 320, idealWidth: 380, maxWidth: 600, maxHeight: .infinity)
                 }
                 DetailArea(selectedServerID: selectedServerID)
-                    .frame(minWidth: 360, maxWidth: .infinity)
+                    .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         // 목록에서 서버를 고르면 그 서버 정보를 보여준다. 열린 터미널 탭은 유지된다.
