@@ -23,6 +23,8 @@ struct SidebarView: View {
                         .tag(SidebarItem.servers(.manual))
                 }
             }
+            // 헤더에 마우스를 올려도 접기 표시가 나타나지 않도록 섹션 접기를 끈다.
+            .collapsible(false)
 
             Section {
                 ForEach(state.accounts) { account in
@@ -68,6 +70,8 @@ struct SidebarView: View {
                     .accessibilityLabel("AWS 계정 추가")
                 }
             }
+            // 헤더에 마우스를 올려도 접기 표시가 나타나지 않도록 섹션 접기를 끈다.
+            .collapsible(false)
         }
         .listStyle(.sidebar)
         .sheet(isPresented: $showsAddAccount) {
