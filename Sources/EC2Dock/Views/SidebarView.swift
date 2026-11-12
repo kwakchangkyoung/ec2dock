@@ -9,7 +9,14 @@ struct SidebarView: View {
 
     var body: some View {
         List(selection: $selection) {
-            Section("서버") {
+            Section {
+                // macOS 27 사이드바 섹션 헤더는 .collapsible(false)여도 호버 시 접기 화살표가 나타나므로 헤더를 선택 불가 행으로 그린다.
+                Text("서버")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+                    .selectionDisabled()
+
                 Label("전체 서버", systemImage: "server.rack")
                     .tag(SidebarItem.servers(.all))
                 Label("즐겨찾기", systemImage: "star")
@@ -23,10 +30,34 @@ struct SidebarView: View {
                         .tag(SidebarItem.servers(.manual))
                 }
             }
-            // 헤더에 마우스를 올려도 접기 표시가 나타나지 않도록 섹션 접기를 끈다.
-            .collapsible(false)
 
             Section {
+                HStack {
+                    Text("AWS 계정")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button {
+                        showsAddManualServer = true
+                    } label: {
+                        Image(systemName: "plus.rectangle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("서버 직접 추가")
+                    .accessibilityLabel("서버 직접 추가")
+
+                    Button {
+                        showsAddAccount = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("AWS 계정 추가")
+                    .accessibilityLabel("AWS 계정 추가")
+                }
+                .selectionDisabled()
+
                 ForEach(state.accounts) { account in
                     Label {
                         HStack {
@@ -47,31 +78,7 @@ struct SidebarView: View {
                     .foregroundStyle(account.isScanned || account.isPending ? .primary : .secondary)
                     .tag(SidebarItem.servers(.account(account.accountID)))
                 }
-            } header: {
-                HStack {
-                    Text("AWS 계정")
-                    Spacer()
-                    Button {
-                        showsAddManualServer = true
-                    } label: {
-                        Image(systemName: "plus.rectangle")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("서버 직접 추가")
-                    .accessibilityLabel("서버 직접 추가")
-
-                    Button {
-                        showsAddAccount = true
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("AWS 계정 추가")
-                    .accessibilityLabel("AWS 계정 추가")
-                }
             }
-            // 헤더에 마우스를 올려도 접기 표시가 나타나지 않도록 섹션 접기를 끈다.
-            .collapsible(false)
         }
         .listStyle(.sidebar)
         .sheet(isPresented: $showsAddAccount) {
