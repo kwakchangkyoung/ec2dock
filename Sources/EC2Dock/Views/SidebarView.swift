@@ -6,6 +6,14 @@ struct SidebarView: View {
     @Binding var selection: SidebarItem?
     @ViewState private var showsAddAccount = false
     @ViewState private var showsAddManualServer = false
+    @ViewState private var renamingAccount: AccountSummary?
+    @ViewState private var renameText = ""
+
+    /// 표시 이름이 겹치는 계정 (계정 ID 끝자리로 구분한다)
+    private var duplicatedAliases: Set<String> {
+        let counts = Dictionary(state.accounts.map { ($0.alias, 1) }, uniquingKeysWith: +)
+        return Set(counts.filter { $0.value > 1 }.keys)
+    }
 
     var body: some View {
         List(selection: $selection) {
@@ -62,6 +70,10 @@ struct SidebarView: View {
                     Label {
                         HStack {
                             Text(account.alias)
+                            if duplicatedAliases.contains(account.alias) {
+                                Text("·…\(account.accountID.suffix(4))")
+                                    .foregroundStyle(.secondary)
+                            }
                             Spacer()
                             Text(account.isPending ? "조회 전" : account.isScanned ? "\(account.serverCount)" : "조회 안 함 · \(account.serverCount)")
                                 .foregroundStyle(.secondary)
@@ -73,10 +85,23 @@ struct SidebarView: View {
                     .help(account.isPending
                           ? "AWS CLI 프로필 \(account.alias): 목록을 새로고침하면 서버가 표시됩니다"
                           : account.isScanned
-                              ? "계정 \(account.accountID) · 프로필 \(account.alias)"
+                              ? "계정 \(account.accountID) · 프로필 \(account.awsProfile ?? account.alias)"
                               : "계정 \(account.accountID) · 이 Mac의 조회 대상 프로필과 연결되어 있지 않습니다(캐시/동기화된 서버)")
                     .foregroundStyle(account.isScanned || account.isPending ? .primary : .secondary)
                     .tag(SidebarItem.servers(.account(account.accountID)))
+                    .contextMenu {
+                        if !account.isPending {
+                            Button("이름 변경…") {
+                                renameText = account.alias
+                                renamingAccount = account
+                            }
+                            if state.customAccountName(for: account.accountID) != nil {
+                                Button("기본 이름으로 되돌리기") {
+                                    state.renameAccount(account.accountID, to: "")
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -86,6 +111,15 @@ struct SidebarView: View {
         }
         .sheet(isPresented: $showsAddManualServer) {
             AddManualServerView()
+        }
+        .alert("계정 이름 변경",
+               isPresented: Binding(get: { renamingAccount != nil }, set: { if !$0 { renamingAccount = nil } }),
+               presenting: renamingAccount) { account in
+            TextField("이름", text: $renameText)
+            Button("저장") { state.renameAccount(account.accountID, to: renameText) }
+            Button("취소", role: .cancel) {}
+        } message: { account in
+            Text("계정 \(account.accountID)의 표시 이름입니다. 이 Mac의 사이드바에만 적용되며, 비우면 기본 이름으로 돌아갑니다.")
         }
         // 설정은 macOS 표준 설정 창(⌘,)으로 연다.
         .safeAreaInset(edge: .bottom) {

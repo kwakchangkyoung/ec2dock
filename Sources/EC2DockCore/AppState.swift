@@ -72,6 +72,8 @@ public final class AppState {
 
     /// 조회로 확인한 계정 ID → AWS CLI 프로필
     private var accountProfiles: [String: String] = [:]
+    /// 계정 ID → 사용자가 지정한 표시 이름 (이 Mac 전용)
+    private var accountNames: [String: String] = [:]
 
     private let aws: any AWSDiscoveryService
     private let connectionService: any ConnectionService
@@ -134,6 +136,7 @@ public final class AppState {
         state.syncBase = load([ServerProfile].self, .syncBase) ?? []
         state.syncVersionResolutions = load([ServerProfile].self, .syncVersionResolutions) ?? []
         state.accountProfiles = load([String: String].self, .accountProfiles) ?? [:]
+        state.accountNames = load([String: String].self, .accountNames) ?? [:]
         state.deletedProfiles = load([ProfileTombstone].self, .deletedProfiles) ?? []
         state.persistenceErrors = loadErrors
         return state
@@ -184,12 +187,27 @@ public final class AppState {
         profiles.first { $0.id == id }
     }
 
-    /// 화면에 보여줄 계정 이름: 이 Mac에서 그 계정을 조회하는 AWS CLI 프로필 이름.
-    /// 모르면 서버 프로필에 저장된 별칭(처음 발견할 때의 프로필 이름, iCloud 동기화 값)을 쓴다.
+    /// 화면에 보여줄 계정 이름: 사용자가 지정한 이름 > 이 Mac에서 그 계정을 조회하는 AWS CLI 프로필 이름
+    /// > 서버 프로필에 저장된 별칭(처음 발견할 때의 프로필 이름, iCloud 동기화 값) > 계정 ID.
     /// 저장된 별칭은 바꾸지 않는다 — Mac마다 프로필 이름이 달라 동기화 충돌이 생길 수 있다.
     public func accountLabel(for accountID: String) -> String {
+        if let name = accountNames[accountID], !name.isEmpty { return name }
         if let awsProfile = accountProfiles[accountID] { return awsProfile }
         return profiles.first { $0.accountID == accountID }?.accountAlias ?? accountID
+    }
+
+    /// 사용자가 지정한 계정 표시 이름. 없으면 nil.
+    public func customAccountName(for accountID: String) -> String? { accountNames[accountID] }
+
+    /// 사이드바에 보이는 계정 이름을 바꾼다 (이 Mac에만 저장). 빈 문자열이면 지워서 기본 이름으로 되돌린다.
+    public func renameAccount(_ accountID: String, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            accountNames.removeValue(forKey: accountID)
+        } else {
+            accountNames[accountID] = trimmed
+        }
+        persist(accountNames, to: .accountNames)
     }
 
     /// 사이드바 "AWS Accounts": 서버가 있는 계정 + 서버가 아직 없는 조회 대상 프로필.
@@ -205,7 +223,7 @@ public final class AppState {
         where availableAWSProfiles.contains(awsProfile) && !shownProfiles.contains(awsProfile) {
             if let accountID = accountProfiles.first(where: { $0.value == awsProfile })?.key {
                 // 조회는 했지만 조회 리전에 서버가 없는 계정
-                result.append(AccountSummary(accountID: accountID, alias: awsProfile, serverCount: 0, awsProfile: awsProfile))
+                result.append(AccountSummary(accountID: accountID, alias: accountLabel(for: accountID), serverCount: 0, awsProfile: awsProfile))
             } else {
                 result.append(AccountSummary(accountID: "profile:\(awsProfile)", alias: awsProfile, serverCount: 0,
                                              awsProfile: awsProfile, isPending: true))
@@ -284,6 +302,9 @@ public final class AppState {
         for (awsProfile, result) in zip(profilesToScan, identities) {
             switch result {
             case .success(let identity):
+                // 한 AWS CLI 프로필은 하나의 계정만 가리킨다. 자격 증명이 다른 계정으로 바뀌었으면
+                // 예전 계정에 남은 매핑을 지워 두 계정이 같은 프로필 이름으로 표시되지 않게 한다.
+                accountProfiles = accountProfiles.filter { $0.key == identity.accountID || $0.value != awsProfile }
                 accountProfiles[identity.accountID] = awsProfile
                 validProfiles.append((profile: awsProfile, accountID: identity.accountID))
             case .failure(is CancellationError):
