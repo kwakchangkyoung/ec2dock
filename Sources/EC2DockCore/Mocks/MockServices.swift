@@ -21,6 +21,7 @@ public actor MockAWSDiscoveryService: AWSDiscoveryService {
     }
 
     public func setInstances(_ instances: [EC2Instance]) { self.instances = instances }
+    public func setAccounts(_ accounts: [String: String]) { self.accounts = accounts }
     public func setFailure(_ failure: AWSDiscoveryError?) { self.failure = failure }
 
     public func listProfiles() async throws -> [String] {

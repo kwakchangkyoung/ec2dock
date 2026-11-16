@@ -333,6 +333,50 @@ struct AppStatePersistenceTests {
         #expect(state.profile(id: workerID) != nil)
         #expect(state.item(id: workerID)?.stateLabel == "unknown")
     }
+
+    /// 한 AWS CLI 프로필이 다른 계정을 가리키게 바뀌면 예전 계정의 매핑을 지운다 (같은 이름의 계정이 둘로 보이던 버그).
+    @Test func remappedProfileClearsOldAccountMapping() async throws {
+        let accountX = "100000000001"
+        let accountY = "100000000002"
+        let aws = MockAWSDiscoveryService(accounts: ["shared": accountX], instances: [])
+        var preferences = SampleData.preferences
+        preferences.enabledAWSProfiles = ["shared"]
+        try store.save(preferences, to: .preferences)
+        try store.save([ServerProfile(accountID: accountX, accountAlias: "old-x", region: SampleData.seoul,
+                                      instanceID: "i-00000000000000001", displayName: "x-01",
+                                      environment: "Production", createdAt: fixedDate, updatedAt: fixedDate)],
+                       to: .profiles)
+        let state = AppState.live(store: store, aws: aws, connectionService: MockConnectionService(), syncService: MockSyncService())
+        await state.refresh()
+        #expect(state.accountLabel(for: accountX) == "shared")
+
+        await aws.setAccounts(["shared": accountY])
+        await state.refresh()
+
+        #expect(try store.load([String: String].self, from: .accountProfiles) == [accountY: "shared"])
+        let xSummary = try #require(state.accounts.first { $0.accountID == accountX })
+        #expect(xSummary.awsProfile == nil)
+        #expect(xSummary.isScanned == false)
+        #expect(state.accounts.first { $0.accountID == accountY }?.alias == "shared")
+        #expect(Set(state.accounts.map(\.alias)).count == state.accounts.count)
+    }
+
+    /// 지정한 계정 이름은 프로필 이름보다 우선하고, 재시작 후에도 유지된다. 비우면 기본 이름으로 돌아간다.
+    @Test func customAccountNameTakesPriorityAndPersists() async {
+        let state = makeState()
+        await state.refresh()
+        state.renameAccount(SampleData.prodAccountID, to: " 운영 계정 ")
+        #expect(state.accountLabel(for: SampleData.prodAccountID) == "운영 계정")
+        #expect(state.customAccountName(for: SampleData.prodAccountID) == "운영 계정")
+        #expect(state.accounts.first { $0.accountID == SampleData.prodAccountID }?.alias == "운영 계정")
+
+        let relaunched = makeState()
+        #expect(relaunched.accountLabel(for: SampleData.prodAccountID) == "운영 계정")
+
+        state.renameAccount(SampleData.prodAccountID, to: "")
+        #expect(state.customAccountName(for: SampleData.prodAccountID) == nil)
+        #expect(state.accountLabel(for: SampleData.prodAccountID) == "acme-prod")
+    }
 }
 
 extension AppState {
