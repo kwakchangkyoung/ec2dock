@@ -570,19 +570,25 @@ struct TerminalHostView: NSViewRepresentable {
 
     final class Coordinator {
         var wasFocused = false
+        /// 이 칸이 지금 붙이려는 터미널 뷰 (칸이 다른 터미널에 재사용되면 바뀐다)
+        weak var terminalView: LocalProcessTerminalView?
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSView {
         let container = TerminalContainerView()
+        claim(container, context: context)
         attach(to: container)
         context.coordinator.wasFocused = isFocused
         return container
     }
 
     func updateNSView(_ container: NSView, context: Context) {
-        if terminalView.superview !== container {
+        if context.coordinator.terminalView !== terminalView {
+            claim(container, context: context)
+            attach(to: container)
+        } else if terminalView.superview == nil, let owner = Self.owner(of: terminalView), owner === container {
             attach(to: container)
         } else if isFocused && !context.coordinator.wasFocused {
             focusIfNeeded()
@@ -590,11 +596,30 @@ struct TerminalHostView: NSViewRepresentable {
         context.coordinator.wasFocused = isFocused
     }
 
+    /// 분할이 합쳐지거나 탭을 옮기면 SwiftUI는 같은 터미널을 새 칸에 붙인 뒤 이전 칸을 정리한다.
+    /// 이전 칸이 터미널을 떼어내기만 하면 화면이 비고 키 입력도 받지 못하므로,
+    /// 떼어낸 터미널은 아직 살아 있는 가장 최근 칸에 다시 붙인다.
     static func dismantleNSView(_ container: NSView, coordinator: Coordinator) {
-        container.subviews.forEach { $0.removeFromSuperview() }
+        guard let view = coordinator.terminalView else {
+            container.subviews.forEach { $0.removeFromSuperview() }
+            return
+        }
+        release(container, from: view)
+        if view.superview === container {
+            let hadFocus = container.window?.firstResponder === view
+            view.removeFromSuperview()
+            if let owner = owner(of: view) {
+                owner.addSubview(view)
+                (owner as? TerminalContainerView)?.fitTerminal()
+                view.needsDisplay = true
+                if hadFocus { owner.window?.makeFirstResponder(view) }
+            }
+        }
     }
 
     private func attach(to container: NSView) {
+        // 칸이 다른 터미널에 재사용된 경우 이전 터미널은 떼어낸다.
+        for subview in container.subviews where subview !== terminalView { subview.removeFromSuperview() }
         terminalView.removeFromSuperview()
         // 크기는 TerminalContainerView가 맞춘다. 막 만든 칸은 아직 0×0이라 여기서 크기를 넣지 않는다.
         terminalView.autoresizingMask = []
@@ -602,6 +627,36 @@ struct TerminalHostView: NSViewRepresentable {
         (container as? TerminalContainerView)?.fitTerminal()
         terminalView.needsDisplay = true
         focusIfNeeded()
+    }
+
+    // MARK: 터미널별 칸 목록 (나중에 만든 칸이 우선)
+
+    private static var containers: [ObjectIdentifier: [WeakContainer]] = [:]
+
+    private struct WeakContainer {
+        weak var view: NSView?
+    }
+
+    private func claim(_ container: NSView, context: Context) {
+        if let previous = context.coordinator.terminalView, previous !== terminalView {
+            Self.release(container, from: previous)
+        }
+        context.coordinator.terminalView = terminalView
+        let key = ObjectIdentifier(terminalView)
+        var list = (Self.containers[key] ?? []).filter { $0.view != nil && $0.view !== container }
+        list.append(WeakContainer(view: container))
+        Self.containers[key] = list
+    }
+
+    private static func release(_ container: NSView, from view: LocalProcessTerminalView) {
+        let key = ObjectIdentifier(view)
+        let list = (containers[key] ?? []).filter { $0.view != nil && $0.view !== container }
+        containers[key] = list.isEmpty ? nil : list
+    }
+
+    /// 이 터미널을 붙일 칸: 아직 살아 있는 칸 중 가장 나중에 만든 칸
+    private static func owner(of view: LocalProcessTerminalView) -> NSView? {
+        containers[ObjectIdentifier(view)]?.last(where: { $0.view != nil })?.view
     }
 
     private func focusIfNeeded() {
