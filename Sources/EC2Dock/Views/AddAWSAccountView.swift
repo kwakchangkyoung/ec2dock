@@ -97,7 +97,7 @@ struct AddAWSAccountView: View {
                     .foregroundStyle(.secondary)
             }
             .padding(10)
-            TerminalHostView(terminalView: controller.terminalView)
+            TerminalHostView(terminalView: controller.terminalView, onSized: controller.startIfNeeded)
                 .padding(8)
                 .background(Color(nsColor: controller.backgroundColor))
             Divider()
