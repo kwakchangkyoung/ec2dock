@@ -388,7 +388,8 @@ struct TerminalPaneView: View {
             if controller.session.isProduction {
                 Rectangle().fill(.red).frame(height: 3)
             }
-            TerminalHostView(terminalView: controller.terminalView, isFocused: isFocused && !terminals.isFindBarVisible)
+            TerminalHostView(terminalView: controller.terminalView, isFocused: isFocused && !terminals.isFindBarVisible,
+                             onSized: controller.startIfNeeded)
                 .padding(8)
                 .background(Color(nsColor: controller.backgroundColor))
             if case .exited(let code) = controller.status {
@@ -567,6 +568,8 @@ struct AWSLoginButton: View {
 struct TerminalHostView: NSViewRepresentable {
     let terminalView: LocalProcessTerminalView
     var isFocused = true
+    /// 칸 크기가 처음 정해지면 부른다 (프로세스 시작)
+    var onSized: (() -> Void)?
 
     final class Coordinator {
         var wasFocused = false
@@ -623,6 +626,7 @@ struct TerminalHostView: NSViewRepresentable {
         terminalView.removeFromSuperview()
         // 크기는 TerminalContainerView가 맞춘다. 막 만든 칸은 아직 0×0이라 여기서 크기를 넣지 않는다.
         terminalView.autoresizingMask = []
+        (container as? TerminalContainerView)?.onSized = onSized
         container.addSubview(terminalView)
         (container as? TerminalContainerView)?.fitTerminal()
         terminalView.needsDisplay = true
@@ -675,6 +679,9 @@ struct TerminalHostView: NSViewRepresentable {
 /// 탭을 옮겨 새 칸에 붙을 때 0×0을 그대로 넣으면 최소 크기(2열)로 줄었다가 원래 크기로 돌아오면서
 /// 화면 글자가 겹치거나 사라지고, 서버에도 창 크기 변경 신호가 연달아 가 프롬프트가 엉뚱한 줄에 다시 그려진다.
 final class TerminalContainerView: NSView {
+    /// 크기가 정해져 터미널을 맞춘 뒤 부른다
+    var onSized: (() -> Void)?
+
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         fitTerminal()
@@ -685,6 +692,7 @@ final class TerminalContainerView: NSView {
         for subview in subviews where subview.frame != bounds {
             subview.frame = bounds
         }
+        if !subviews.isEmpty { onSized?() }
     }
 }
 

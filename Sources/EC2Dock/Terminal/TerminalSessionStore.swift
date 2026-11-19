@@ -422,6 +422,7 @@ final class TerminalSessionController: Identifiable {
     @ObservationIgnored let terminalView: LocalProcessTerminalView
     @ObservationIgnored private var processDelegate: ProcessDelegate?
     @ObservationIgnored private var exitWatcher: Task<Void, Never>?
+    @ObservationIgnored private var hasStarted = false
     /// 프로세스가 끝나면 알린다. 종료 코드는 일반 종료면 0~255, 시그널로 끝나면 nil.
     @ObservationIgnored var onExit: ((UUID, Int32?) -> Void)?
 
@@ -438,6 +439,14 @@ final class TerminalSessionController: Identifiable {
         }
         processDelegate = delegate
         terminalView.processDelegate = delegate
+    }
+
+    /// 화면에 붙어 실제 크기가 정해진 뒤 한 번만 프로세스를 시작한다.
+    /// 시작할 때의 열·행이 ssh 창 크기로 전달되므로, 임시 크기(800×500)로 시작하면
+    /// 서버가 그 크기로 첫 화면(로그인 안내·프롬프트)을 그린 뒤 실제 크기로 바뀌면서 글자가 깨진다.
+    func startIfNeeded() {
+        guard !hasStarted else { return }
+        hasStarted = true
         // 셸을 거치지 않고 실행 파일 + 인자 배열로 pty에서 실행한다.
         terminalView.startProcess(executable: session.command.executable, args: session.command.arguments,
                                   environment: Self.environment())
@@ -503,7 +512,7 @@ final class TerminalSessionController: Identifiable {
     }
 
     func terminate() {
-        if isRunning { terminalView.terminate() }
+        if isRunning && hasStarted { terminalView.terminate() }
     }
 
     /// 터미널 기본값에 ssh-agent 소켓과 PATH만 더한다. 자격 증명 값은 넘기지 않는다.
