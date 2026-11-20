@@ -343,21 +343,106 @@ private struct PaneTreeView: View {
         switch node {
         case .pane(let id):
             TerminalPaneView(paneID: id, isFocused: tab.focusedPaneID == id, isSplit: tab.root.paneIDs.count > 1)
-        case .split(_, let axis, let children):
-            if axis == .horizontal {
-                HSplitView {
-                    ForEach(children) { child in
-                        AnyView(PaneTreeView(node: child, tab: tab)).frame(minWidth: 160)
-                    }
-                }
-            } else {
-                VSplitView {
-                    ForEach(children) { child in
-                        AnyView(PaneTreeView(node: child, tab: tab)).frame(minHeight: 90)
+        case .split(let id, let axis, let children):
+            PaneSplitView(axis: axis, children: children, tab: tab)
+                .id(id)
+        }
+    }
+}
+
+/// 칸을 비율대로 나란히 놓는다.
+/// HSplitView/VSplitView는 칸 구조가 바뀌면(예: 좌우 분할의 한쪽을 다시 위아래로 나누면)
+/// 새로 만든 쪽을 최소 크기로 줄여 버려서, 비율을 직접 들고 그린다.
+/// 칸 수가 바뀌면 똑같이 나누고, 경계를 드래그하면 이웃한 두 칸의 비율만 바꾼다.
+private struct PaneSplitView: View {
+    let axis: SplitAxis
+    let children: [PaneNode]
+    let tab: TerminalTabLayout
+
+    @State private var fractions: [CGFloat] = []
+    /// 드래그를 시작할 때의 비율 (드래그 중 누적 이동량을 여기에 더한다)
+    @State private var dragStartFractions: [CGFloat]?
+
+    private static let dividerThickness: CGFloat = 1
+    private var minLength: CGFloat { axis == .horizontal ? 160 : 90 }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let total = axis == .horizontal ? geometry.size.width : geometry.size.height
+            let available = max(total - Self.dividerThickness * CGFloat(children.count - 1), 0)
+            let current = normalized(fractions)
+            stack {
+                ForEach(Array(children.enumerated()), id: \.element.id) { index, child in
+                    AnyView(PaneTreeView(node: child, tab: tab))
+                        .frame(width: axis == .horizontal ? available * current[index] : nil,
+                               height: axis == .vertical ? available * current[index] : nil)
+                    if index < children.count - 1 {
+                        divider(after: index, available: available)
                     }
                 }
             }
         }
+        .onChange(of: children.count, initial: true) { _, count in
+            fractions = Array(repeating: 1 / CGFloat(count), count: count)
+        }
+    }
+
+    @ViewBuilder
+    private func stack<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        if axis == .horizontal {
+            HStack(spacing: 0, content: content)
+        } else {
+            VStack(spacing: 0, content: content)
+        }
+    }
+
+    private func normalized(_ values: [CGFloat]) -> [CGFloat] {
+        guard values.count == children.count, values.allSatisfy({ $0 > 0 }) else {
+            return Array(repeating: 1 / CGFloat(children.count), count: children.count)
+        }
+        let sum = values.reduce(0, +)
+        return values.map { $0 / sum }
+    }
+
+    /// 보이는 선은 1pt, 잡을 수 있는 영역은 양옆으로 넓힌다.
+    private func divider(after index: Int, available: CGFloat) -> some View {
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor))
+            .frame(width: axis == .horizontal ? Self.dividerThickness : nil,
+                   height: axis == .vertical ? Self.dividerThickness : nil)
+            .overlay {
+                Color.clear
+                    .frame(width: axis == .horizontal ? 8 : nil, height: axis == .vertical ? 8 : nil)
+                    .contentShape(Rectangle())
+                    .onHover { inside in
+                        let cursor: NSCursor = axis == .horizontal ? .resizeLeftRight : .resizeUpDown
+                        inside ? cursor.push() : NSCursor.pop()
+                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .onChanged { value in
+                                let start = dragStartFractions ?? normalized(fractions)
+                                if dragStartFractions == nil { dragStartFractions = start }
+                                let delta = axis == .horizontal ? value.translation.width : value.translation.height
+                                fractions = resized(start, index: index, delta: delta, available: available)
+                            }
+                            .onEnded { _ in dragStartFractions = nil }
+                    )
+            }
+            .zIndex(1)
+    }
+
+    /// `index` 칸과 다음 칸 사이 경계를 `delta`만큼 옮긴다. 두 칸 모두 최소 크기 아래로는 줄이지 않는다.
+    private func resized(_ start: [CGFloat], index: Int, delta: CGFloat, available: CGFloat) -> [CGFloat] {
+        guard available > 0 else { return start }
+        let pair = start[index] + start[index + 1]
+        let minFraction = min(minLength / available, pair / 2)
+        var first = start[index] + delta / available
+        first = min(max(first, minFraction), pair - minFraction)
+        var result = start
+        result[index] = first
+        result[index + 1] = pair - first
+        return result
     }
 }
 
@@ -678,21 +763,54 @@ struct TerminalHostView: NSViewRepresentable {
 /// SwiftTerm은 크기가 바뀔 때마다 열·행을 다시 계산하고 줄을 다시 배치(reflow)한다.
 /// 탭을 옮겨 새 칸에 붙을 때 0×0을 그대로 넣으면 최소 크기(2열)로 줄었다가 원래 크기로 돌아오면서
 /// 화면 글자가 겹치거나 사라지고, 서버에도 창 크기 변경 신호가 연달아 가 프롬프트가 엉뚱한 줄에 다시 그려진다.
+///
+/// 칸을 처음 맞춘 뒤의 크기 변경(경계 드래그, 창 크기 조절)은 멈출 때까지 기다렸다가 한 번만 반영한다.
+/// 드래그 중 크기를 바로 바꾸면 열 수가 바뀔 때마다 SwiftTerm이 출력된 줄을 다시 배치하고
+/// 서버 셸도 프롬프트를 다시 그려, 그 조각들이 겹쳐 글자가 깨져 보인다.
 final class TerminalContainerView: NSView {
     /// 크기가 정해져 터미널을 맞춘 뒤 부른다
     var onSized: (() -> Void)?
+    /// 이 칸에서 터미널 크기를 한 번이라도 맞췄는지 (처음 한 번은 바로 맞춘다)
+    private var hasFitted = false
+    private var pendingFit: DispatchWorkItem?
+    private static let resizeDelay: TimeInterval = 0.15
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        // 크기 반영을 미루는 동안 터미널이 칸 밖으로 넘쳐 그려지지 않게 한다.
+        wantsLayer = true
+        layer?.masksToBounds = true
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        wantsLayer = true
+        layer?.masksToBounds = true
+    }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        fitTerminal()
+        guard hasFitted else {
+            fitTerminal()
+            return
+        }
+        pendingFit?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.fitTerminal() }
+        pendingFit = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.resizeDelay, execute: work)
     }
 
     func fitTerminal() {
+        pendingFit?.cancel()
+        pendingFit = nil
         guard bounds.width >= 1, bounds.height >= 1 else { return }
         for subview in subviews where subview.frame != bounds {
             subview.frame = bounds
         }
-        if !subviews.isEmpty { onSized?() }
+        if !subviews.isEmpty {
+            hasFitted = true
+            onSized?()
+        }
     }
 }
 
