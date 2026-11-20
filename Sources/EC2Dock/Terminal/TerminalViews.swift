@@ -763,21 +763,54 @@ struct TerminalHostView: NSViewRepresentable {
 /// SwiftTerm은 크기가 바뀔 때마다 열·행을 다시 계산하고 줄을 다시 배치(reflow)한다.
 /// 탭을 옮겨 새 칸에 붙을 때 0×0을 그대로 넣으면 최소 크기(2열)로 줄었다가 원래 크기로 돌아오면서
 /// 화면 글자가 겹치거나 사라지고, 서버에도 창 크기 변경 신호가 연달아 가 프롬프트가 엉뚱한 줄에 다시 그려진다.
+///
+/// 칸을 처음 맞춘 뒤의 크기 변경(경계 드래그, 창 크기 조절)은 멈출 때까지 기다렸다가 한 번만 반영한다.
+/// 드래그 중 크기를 바로 바꾸면 열 수가 바뀔 때마다 SwiftTerm이 출력된 줄을 다시 배치하고
+/// 서버 셸도 프롬프트를 다시 그려, 그 조각들이 겹쳐 글자가 깨져 보인다.
 final class TerminalContainerView: NSView {
     /// 크기가 정해져 터미널을 맞춘 뒤 부른다
     var onSized: (() -> Void)?
+    /// 이 칸에서 터미널 크기를 한 번이라도 맞췄는지 (처음 한 번은 바로 맞춘다)
+    private var hasFitted = false
+    private var pendingFit: DispatchWorkItem?
+    private static let resizeDelay: TimeInterval = 0.15
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        // 크기 반영을 미루는 동안 터미널이 칸 밖으로 넘쳐 그려지지 않게 한다.
+        wantsLayer = true
+        layer?.masksToBounds = true
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        wantsLayer = true
+        layer?.masksToBounds = true
+    }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        fitTerminal()
+        guard hasFitted else {
+            fitTerminal()
+            return
+        }
+        pendingFit?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.fitTerminal() }
+        pendingFit = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.resizeDelay, execute: work)
     }
 
     func fitTerminal() {
+        pendingFit?.cancel()
+        pendingFit = nil
         guard bounds.width >= 1, bounds.height >= 1 else { return }
         for subview in subviews where subview.frame != bounds {
             subview.frame = bounds
         }
-        if !subviews.isEmpty { onSized?() }
+        if !subviews.isEmpty {
+            hasFitted = true
+            onSized?()
+        }
     }
 }
 
